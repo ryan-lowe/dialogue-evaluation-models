@@ -16,7 +16,6 @@ import math
 import os
 import numpy
 import codecs
-import search
 import utils
 
 from dialog_encdec import DialogEncoderDecoder
@@ -57,7 +56,7 @@ def parse_args():
 
     return parser.parse_args()
 
-def compute_encodings(joined_contexts, model, model_compute_encoding, output_second_last_state = False):
+def compute_encodings(joined_contexts, model, model_compute_encoding):
     # TODO Fix seqlen below
     seqlen = 600
     context = numpy.zeros((seqlen, len(joined_contexts)), dtype='int32')
@@ -88,26 +87,19 @@ def compute_encodings(joined_contexts, model, model_compute_encoding, output_sec
     reversed_context = model.reverse_utterances(context)
 
     encoder_states = model_compute_encoding(context, reversed_context, seqlen+1)
-    hidden_states = encoder_states[-2] # hidden state for the "context" encoder, h_s,
+    context_hidden_states = encoder_states[-2] # hidden state for the "context" encoder, h_s,
                                        # and last hidden state of the utterance "encoder", h
-    #hidden_states = encoder_states[-1] # mean for the stochastic latent variable, z
-
-    if output_second_last_state:
-        second_last_hidden_state = numpy.zeros((hidden_states.shape[1], hidden_states.shape[2]), dtype='float64')
-        for i in range(hidden_states.shape[1]):
-            second_last_hidden_state[i, :] = hidden_states[second_last_utterance_position[i], i, :]
-
-        return second_last_hidden_state
-    else:
-        return hidden_states[-1, :, :]
+    latent_hidden_states = encoder_states[-1] # mean for the stochastic latent variable, z
 
 
-def main():
-    args = parse_args()
+    return context_hidden_states[-1, :, :]
+
+
+def main(model_prefix, dialogue_file, use_second_last_state):
     state = prototype_state()
 
-    state_path = args.model_prefix + "_state.pkl"
-    model_path = args.model_prefix + "_model.npz"
+    state_path = model_prefix + "_state.pkl"
+    model_path = model_prefix + "_model.npz"
 
     with open(state_path) as src:
         state.update(cPickle.load(src))
@@ -125,7 +117,7 @@ def main():
         raise Exception("Must specify a valid model path")
 
     contexts = [[]]
-    lines = open(args.dialogues, "r").readlines()
+    lines = open(dialogue_file, "r").readlines()
     if len(lines):
         contexts = [x.strip() for x in lines]
 
@@ -151,14 +143,12 @@ def main():
             if joined_context[-1] != model.eos_sym:
                 joined_context += [model.eos_sym]
 
-        #print 'joined_context', joined_context
-
         joined_contexts.append(joined_context)
 
         if len(joined_contexts) == model.bs:
             batch_index = batch_index + 1
             logger.debug("[COMPUTE] - Got batch %d / %d" % (batch_index, batch_total))
-            encs = compute_encodings(joined_contexts, model, model_compute_encoding, args.use_second_last_state)
+            encs = compute_encodings(joined_contexts, model, model_compute_encoding, use_second_last_state)
             for i in range(len(encs)):
                 dialogue_encodings.append(encs[i])
 
@@ -167,14 +157,20 @@ def main():
 
     if len(joined_contexts) > 0:
         logger.debug("[COMPUTE] - Got batch %d / %d" % (batch_total, batch_total))
-        encs = compute_encodings(joined_contexts, model, model_compute_encoding, args.use_second_last_state)
+        encs = compute_encodings(joined_contexts, model, model_compute_encoding, use_second_last_state)
         for i in range(len(encs)):
             dialogue_encodings.append(encs[i])
+
+    return dialogue_encodings
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # Compute encodings
+    dialogue_encodings = main(args.model_prefix, args.dialogues, args.use_second_last_state)
 
     # Save encodings to disc
     cPickle.dump(dialogue_encodings, open(args.output + '.pkl', 'w'))
 
-if __name__ == "__main__":
-    main()
 
     #  THEANO_FLAGS=mode=FAST_COMPILE,floatX=float32 python compute_dialogue_embeddings.py tests/models/1462302387.69_testmodel tests/data/tvalid_contexts.txt Latent_Variable_Means --verbose --use-second-last-state

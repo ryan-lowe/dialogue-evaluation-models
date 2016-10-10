@@ -68,7 +68,7 @@ def prototype_state():
     # Define the gating function for the three RNNs.
     state['utterance_encoder_gating'] = 'GRU' # Supports 'None' and 'GRU'
     state['dialogue_encoder_gating'] = 'GRU' # Supports 'None' and 'GRU'
-    state['utterance_decoder_gating'] = 'GRU' # Supports 'None', 'GRU' and 'LSTM'
+    state['utterance_decoder_gating'] = 'GRU' # Supports 'None', 'BOW' (Bag of Words), 'GRU' and 'LSTM'
 
     # If this flag is on, two utterances encoders (one forward and one backward) will be used,
     # otherwise only a forward utterance encoder is used.
@@ -90,7 +90,7 @@ def prototype_state():
     state['reset_utterance_decoder_at_end_of_utterance'] = True
 
     # If this flag is on, the utterance encoder will be reset after each end-of-utterance token.
-    state['reset_utterance_encoder_at_end_of_utterance'] = True
+    state['reset_utterance_encoder_at_end_of_utterance'] = False
 
 
     # ----- HIDDEN LAYER DIMENSIONS -----
@@ -110,34 +110,35 @@ def prototype_state():
     # and the model will be trained using the variational lower bound. 
     # See, for example, the variational auto-encoder by Kingma et al. (2013).
     state['add_latent_gaussian_per_utterance'] = False
-    # This flag will condition the latent variable on the dialogue encoder
+
+    # This flag will condition the latent variables on the dialogue encoder
     state['condition_latent_variable_on_dialogue_encoder'] = False
     # This flag will condition the latent variable on the DCGM (mean pooling over words) encoder.
     # This will replace the conditioning on the utterance encoder.
     # If the flag is false, the latent variable will be conditioned on the utterance encoder RNN.
-    state['condition_latent_variable_on_dcgm_encoder'] = False
+    state['condition_posterior_latent_variable_on_dcgm_encoder'] = False
     # Dimensionality of Gaussian latent variable, which has diagonal covariance matrix.
     state['latent_gaussian_per_utterance_dim'] = 10
-    # If this flag is on, the latent Gaussian variable at time t will be affected linearly
-    # by the distribution (sufficient statistics) of the latent variable at time t-1.
-    # This is different from an actual linear state space model (Kalman filter),
-    # since effective latent variables at time t are independent of all other latent variables,
-    # given the observed utterances. However, it's useful, because it avoids forward propagating noise
-    # which would make the training procedure more difficult than it already is.
-    # Although it has nice properties (matrix preserves more information since it is full rank, and if its eigenvalues are all positive the linear dynamics are just rotations in space),
-    # it appears to make training very unstable!
-    state['latent_gaussian_linear_dynamics'] = False
 
     # This is a constant by which the diagonal covariance matrix is scaled.
     # By setting it to a high number (e.g. 1 or 10),
     # the KL divergence will be relatively low at the beginning of training.
-    state['scale_latent_variable_variances'] = 10
+    state['scale_latent_gaussian_variable_variances'] = 10
+    state['min_latent_gaussian_variable_variances'] = 0.01
+    state['max_latent_gaussian_variable_variances'] = 10.0
+
+
+
+
+
     # If this flag is on, the utterance decoder will ONLY be conditioned on the Gaussian latent variable.
     state['condition_decoder_only_on_latent_variable'] = False
 
-    # If this flag is on, the KL-divergence term weight for the Gaussian latent variable
+
+    # If this flag is on, the KL-divergence term weight for the latent variables
     # will be slowly increased from zero to one.
-    state['train_latent_gaussians_with_kl_divergence_annealing'] = False
+    state['train_latent_variables_with_kl_divergence_annealing'] = False
+
     # The KL-divergence term weight is increased by this parameter for every training batch.
     # It is truncated to one. For example, 1.0/60000.0 means that at iteration 60000 the model
     # will assign weight one to the KL-divergence term
@@ -168,7 +169,7 @@ def prototype_state():
     # but experiments show that this degrades performance.
     state['use_nce'] = False
     # Threshold to clip the gradient
-    state['cutoff'] = 1.
+    state['cutoff'] = 0.01
     # Learning rate. The rate 0.0002 seems to work well across many tasks with adam.
     # Alternatively, the learning rate can be adjusted down (e.g. 0.00004) 
     # to at the end of training to help the model converge well.
@@ -198,6 +199,33 @@ def prototype_state():
     # Error level to stop at
     state['minerr'] = -1
 
+    # The model can apply several normalization operators to the encoder hidden states:
+    # 'NONE': No normalization is applied.
+    # 'BN': Batch normalization is applied.
+    # 'LN': Layer normalization is applied.
+    #
+    # Note the normalization operators can only be applied to GRU encoders and feed-forward neural networks.
+    state['normop_type'] = 'LN'
+
+    if state['normop_type'] == 'BN':
+        state['normop_gamma_init'] = 0.1
+        state['normop_gamma_min'] = 0.05
+        state['normop_gamma_max'] = 10.0
+        state['normop_moving_average_const'] = 0.99
+        state['normop_max_enc_seq'] = 50
+    else:
+        state['normop_gamma_init'] = 1.0
+        state['normop_gamma_min'] = 0.05
+        state['normop_gamma_max'] = 10.0
+        state['normop_moving_average_const'] = 0.99
+        state['normop_max_enc_seq'] = 1
+
+    # Parameters for initializing the training data iterator.
+    # The first is the first offset position in the list examples.
+    # The second is the number of reshuffles to perform at the beginning.
+    state['train_iterator_offset'] = 0
+    state['train_iterator_reshuffle_count'] = 1
+
     return state
 
 def prototype_test():
@@ -214,12 +242,10 @@ def prototype_test():
     
     # Handle pretrained word embeddings. Using this requires rankdim=10
     state['initialize_from_pretrained_word_embeddings'] = False
-    state['pretrained_word_embeddings_file'] = './tests/data/MT_WordEmb.pkl' 
+    state['pretrained_word_embeddings_file'] = './tests/data/MT_WordEmb.pkl'
     state['fix_pretrained_word_embeddings'] = False
     
     state['valid_freq'] = 50
-
-    state['collaps_to_standard_rnn'] = False
     
     state['prefix'] = "testmodel_" 
     state['updater'] = 'adam'
@@ -261,13 +287,10 @@ def prototype_test_variational():
     # Handle pretrained word embeddings. Using this requires rankdim=10
     state['initialize_from_pretrained_word_embeddings'] = True
     state['pretrained_word_embeddings_file'] = './tests/data/MT_WordEmb.pkl' 
-    state['fix_pretrained_word_embeddings'] = True
     
     state['valid_freq'] = 5
-
-    state['collaps_to_standard_rnn'] = False
-    
-    state['prefix'] = "testmodel_" 
+   
+    state['prefix'] = "testmodel_"
     state['updater'] = 'adam'
     
     state['maxout_out'] = False
@@ -281,13 +304,13 @@ def prototype_test_variational():
     state['utterance_decoder_gating'] = 'GRU'
 
     state['bidirectional_utterance_encoder'] = True
+
     state['add_latent_gaussian_per_utterance'] = True
     state['latent_gaussian_per_utterance_dim'] = 5
     state['condition_latent_variable_on_dialogue_encoder'] = True
-    state['condition_latent_variable_on_dcgm_encoder'] = False
-    state['train_latent_gaussians_with_kl_divergence_annealing'] = True
+    state['condition_posterior_latent_variable_on_dcgm_encoder'] = False
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
     state['kl_divergence_annealing_rate'] = 1.0/60000.0
-    state['latent_gaussian_linear_dynamics'] = True
 
     state['decoder_drop_previous_input_tokens'] = True
     state['decoder_drop_previous_input_tokens_rate'] = 0.75
@@ -307,7 +330,7 @@ def prototype_test_variational():
 
 
 # Twitter LSTM RNNLM model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016).
+# by Serban et al. (2016), with batch norm / layer norm extension.
 def prototype_twitter_lstm():
     state = prototype_state()
     
@@ -327,17 +350,13 @@ def prototype_twitter_lstm():
     state['deep_dialogue_input'] = True
     state['deep_out'] = True
 
+    state['reset_utterance_decoder_at_end_of_utterance'] = False
     state['collaps_to_standard_rnn'] = True
  
     state['bs'] = 80 
     state['decoder_bias_type'] = 'all'
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
-
-    state['reset_utterance_decoder_at_end_of_utterance'] = False
-    state['reset_utterance_encoder_at_end_of_utterance'] = False
-    state['lr'] = 0.0001
-
 
     state['qdim_encoder'] = 10
     state['qdim_decoder'] = 2000
@@ -349,14 +368,6 @@ def prototype_twitter_lstm():
 
 
 
-# Twitter HRED model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016).
-# Note, similar or better performance might be reached by setting:
-#
-#   state['decoder_bias_type'] = 'all'
-#   state['reset_utterance_encoder_at_end_of_utterance'] = True
-#   state['utterance_decoder_gating'] = 'LSTM'
-#
 def prototype_twitter_HRED():
     state = prototype_state()
 
@@ -383,10 +394,6 @@ def prototype_twitter_HRED():
     state['decoder_bias_type'] = 'selective' # Choose between 'first', 'all' and 'selective'
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
-
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = False
-    state['lr'] = 0.0001
 
     state['qdim_encoder'] = 1000
     state['qdim_decoder'] = 1000
@@ -426,10 +433,6 @@ def prototype_twitter_HRED_StandardBias():
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
 
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = True
-    state['lr'] = 0.0002
-
     state['qdim_encoder'] = 1000
     state['qdim_decoder'] = 1000
     state['sdim'] = 1000
@@ -441,8 +444,6 @@ def prototype_twitter_HRED_StandardBias():
 
 
 
-# Twitter VHRED model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016). Note, this model was pretrained as the HRED model with state 'prototype_twitter_HRED'!
 def prototype_twitter_VHRED():
     state = prototype_state()
 
@@ -472,10 +473,6 @@ def prototype_twitter_VHRED():
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
 
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = False
-    state['lr'] = 0.0001
-
     state['qdim_encoder'] = 1000
     state['qdim_decoder'] = 1000
     state['sdim'] = 1000
@@ -488,9 +485,9 @@ def prototype_twitter_VHRED():
     state['latent_gaussian_per_utterance_dim'] = 100
 
 
-    state['scale_latent_variable_variances'] = 0.1
+    state['scale_latent_gaussian_variable_variances'] = 0.1
     state['condition_latent_variable_on_dialogue_encoder'] = True
-    state['train_latent_gaussians_with_kl_divergence_annealing'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
     state['kl_divergence_annealing_rate'] = 1.0/60000.0
     state['decoder_drop_previous_input_tokens'] = True
     state['decoder_drop_previous_input_tokens_rate'] = 0.75
@@ -531,10 +528,6 @@ def prototype_twitter_VHRED_StandardBias():
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
 
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = True
-    state['lr'] = 0.0002
-
     state['qdim_encoder'] = 1000
     state['qdim_decoder'] = 1000
     state['sdim'] = 1000
@@ -547,9 +540,9 @@ def prototype_twitter_VHRED_StandardBias():
     state['latent_gaussian_per_utterance_dim'] = 100
 
 
-    state['scale_latent_variable_variances'] = 0.1
+    state['scale_latent_gaussian_variable_variances'] = 0.1
     state['condition_latent_variable_on_dialogue_encoder'] = True
-    state['train_latent_gaussians_with_kl_divergence_annealing'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
     state['kl_divergence_annealing_rate'] = 1.0/60000.0
     state['decoder_drop_previous_input_tokens'] = True
     state['decoder_drop_previous_input_tokens_rate'] = 0.75
@@ -560,7 +553,7 @@ def prototype_twitter_VHRED_StandardBias():
 
 
 # Ubuntu LSTM RNNLM model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016).
+# by Serban et al. (2016), with batch norm / layer norm extension.
 def prototype_ubuntu_LSTM():
     state = prototype_state()
 
@@ -594,16 +587,13 @@ def prototype_ubuntu_LSTM():
     state['deep_dialogue_input'] = True
     state['deep_out'] = True
 
+    state['reset_utterance_decoder_at_end_of_utterance'] = False
     state['collaps_to_standard_rnn'] = True
 
     state['bs'] = 80
     state['decoder_bias_type'] = 'all'
     state['direct_connection_between_encoders_and_decoder'] = False
     state['deep_direct_connection'] = False
-
-    state['reset_utterance_decoder_at_end_of_utterance'] = False
-    state['reset_utterance_encoder_at_end_of_utterance'] = False
-    state['lr'] = 0.0002
 
     state['qdim_encoder'] = 10
     state['qdim_decoder'] = 2000
@@ -616,8 +606,6 @@ def prototype_ubuntu_LSTM():
 
 
 
-# Ubuntu HRED model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016).
 def prototype_ubuntu_HRED():
     state = prototype_state()
 
@@ -653,11 +641,7 @@ def prototype_ubuntu_HRED():
 
     state['bs'] = 80
 
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = True
     state['utterance_decoder_gating'] = 'LSTM'
-
-    state['lr'] = 0.0002
 
     state['qdim_encoder'] = 500
     state['qdim_decoder'] = 500
@@ -668,8 +652,6 @@ def prototype_ubuntu_HRED():
 
 
 
-# Ubuntu VHRED model used in "A Hierarchical Latent Variable Encoder-Decoder Model for Generating Dialogues"
-# by Serban et al. (2016). Note, this model was pretrained as the HRED model with state 'prototype_ubuntu_HRED'!
 def prototype_ubuntu_VHRED():
     state = prototype_state()
 
@@ -705,11 +687,7 @@ def prototype_ubuntu_VHRED():
 
     state['bs'] = 80
 
-    state['reset_utterance_decoder_at_end_of_utterance'] = True
-    state['reset_utterance_encoder_at_end_of_utterance'] = True
     state['utterance_decoder_gating'] = 'LSTM'
-
-    state['lr'] = 0.0002
 
     state['qdim_encoder'] = 500
     state['qdim_decoder'] = 500
@@ -719,9 +697,9 @@ def prototype_ubuntu_VHRED():
     # Latent variable configuration
     state['add_latent_gaussian_per_utterance'] = True
     state['latent_gaussian_per_utterance_dim'] = 100
-    state['scale_latent_variable_variances'] = 0.1
+    state['scale_latent_gaussian_variable_variances'] = 0.1
     state['condition_latent_variable_on_dialogue_encoder'] = True
-    state['train_latent_gaussians_with_kl_divergence_annealing'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
     state['kl_divergence_annealing_rate'] = 1.0/75000.0
     state['decoder_drop_previous_input_tokens'] = True
     state['decoder_drop_previous_input_tokens_rate'] = 0.75
@@ -729,4 +707,215 @@ def prototype_ubuntu_VHRED():
     state['patience'] = 20
 
     return state
+
+
+# Large Twitter HRED model.
+def prototype_twitter_HRED_Large():
+    state = prototype_state()
+
+    # Fill your paths here!
+    state['train_dialogues'] = "../TwitterData/Training.dialogues.pkl"
+    state['test_dialogues'] = "../TwitterData/Test.dialogues.pkl"
+    state['valid_dialogues'] = "../TwitterData/Validation.dialogues.pkl"
+    state['dictionary'] = "../TwitterData/Dataset.dict.pkl"
+    state['save_dir'] = "Output"
+
+    state['max_grad_steps'] = 80
+
+    state['valid_freq'] = 5000
+
+    state['prefix'] = "TwitterModel_"
+    state['updater'] = 'adam'
+
+    state['bidirectional_utterance_encoder'] = True
+
+    state['deep_dialogue_input'] = True
+    state['deep_out'] = True
+
+    state['bs'] = 80
+    state['decoder_bias_type'] = 'all' # Choose between 'first', 'all' and 'selective'
+    state['direct_connection_between_encoders_and_decoder'] = False
+    state['deep_direct_connection'] = False
+
+    state['qdim_encoder'] = 1000
+    state['qdim_decoder'] = 2000
+    state['sdim'] = 1000
+    state['rankdim'] = 400
+
+    state['utterance_decoder_gating'] = 'LSTM'
+
+    state['add_latent_gaussian_per_utterance'] = False
+    state['latent_gaussian_per_utterance_dim'] = 100
+
+    state['scale_latent_gaussian_variable_variances'] = 0.1
+    state['condition_latent_variable_on_dialogue_encoder'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
+    state['kl_divergence_annealing_rate'] = 1.0/60000.0
+    state['decoder_drop_previous_input_tokens'] = True
+    state['decoder_drop_previous_input_tokens_rate'] = 0.75
+
+    state['patience'] = 20
+
+    return state
+
+
+
+
+# Large Twitter HRED model.
+def prototype_twitter_VHRED_Large_SkipConnections():
+    state = prototype_state()
+
+    # Fill your paths here!
+    state['train_dialogues'] = "../TwitterData/Training.dialogues.pkl"
+    state['test_dialogues'] = "../TwitterData/Test.dialogues.pkl"
+    state['valid_dialogues'] = "../TwitterData/Validation.dialogues.pkl"
+    state['dictionary'] = "../TwitterData/Dataset.dict.pkl"
+    state['save_dir'] = "Output"
+
+    state['max_grad_steps'] = 80
+
+    state['valid_freq'] = 5000
+
+    state['prefix'] = "TwitterModel_"
+    state['updater'] = 'adam'
+
+    state['bidirectional_utterance_encoder'] = True
+
+    state['deep_dialogue_input'] = True
+    state['deep_out'] = True
+
+    state['bs'] = 80
+    state['decoder_bias_type'] = 'all' # Choose between 'first', 'all' and 'selective'
+    state['direct_connection_between_encoders_and_decoder'] = False
+    state['deep_direct_connection'] = False
+
+    state['qdim_encoder'] = 1000
+    state['qdim_decoder'] = 2000
+    state['sdim'] = 1000
+    state['rankdim'] = 400
+
+    state['utterance_decoder_gating'] = 'LSTM'
+
+    state['add_latent_gaussian_per_utterance'] = True
+    state['latent_gaussian_per_utterance_dim'] = 100
+
+    state['scale_latent_gaussian_variable_variances'] = 0.1
+    state['condition_latent_variable_on_dialogue_encoder'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
+    state['kl_divergence_annealing_rate'] = 1.0/60000.0
+    state['decoder_drop_previous_input_tokens'] = True
+    state['decoder_drop_previous_input_tokens_rate'] = 0.75
+
+    state['patience'] = 20
+
+    return state
+
+
+
+
+
+def prototype_twitter_Gauss_VHRED_NormOp():
+    state = prototype_state()
+
+    # Fill your paths here!
+    state['train_dialogues'] = "../TwitterDataBPE/Train.dialogues.pkl"
+    state['test_dialogues'] = "../TwitterDataBPE/Test.dialogues.pkl"
+    state['valid_dialogues'] = "../TwitterDataBPE/Valid.dialogues.pkl"
+    state['dictionary'] = "../TwitterDataBPE/Dataset.dict.pkl"
+    state['save_dir'] = "Output"
+
+    state['max_grad_steps'] = 80
+
+    state['valid_freq'] = 5000
+
+    state['prefix'] = "TwitterModel_"
+    state['updater'] = 'adam'
+
+    state['bidirectional_utterance_encoder'] = True
+
+    state['deep_dialogue_input'] = False
+    state['deep_out'] = True
+
+    state['bs'] = 80
+    state['decoder_bias_type'] = 'all' # Choose between 'first', 'all' and 'selective'
+
+    state['direct_connection_between_encoders_and_decoder'] = True
+    state['deep_direct_connection'] = False
+
+    state['qdim_encoder'] = 1000
+    state['qdim_decoder'] = 2000
+    state['sdim'] = 1000
+    state['rankdim'] = 400
+
+    state['utterance_decoder_gating'] = 'GRU'
+
+    state['add_latent_gaussian_per_utterance'] = True
+    state['latent_gaussian_per_utterance_dim'] = 100
+    state['scale_latent_gaussian_variable_variances'] = 0.1
+
+    state['condition_latent_variable_on_dialogue_encoder'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
+    state['kl_divergence_annealing_rate'] = 1.0/60000.0
+    state['decoder_drop_previous_input_tokens'] = True
+    state['decoder_drop_previous_input_tokens_rate'] = 0.75
+
+    state['patience'] = 20
+
+    return state
+
+
+
+
+def prototype_twitter_HRED_NormOp():
+    state = prototype_state()
+
+    # Fill your paths here!
+    state['train_dialogues'] = "../TwitterDataBPE/Train.dialogues.pkl"
+    state['test_dialogues'] = "../TwitterDataBPE/Test.dialogues.pkl"
+    state['valid_dialogues'] = "../TwitterDataBPE/Valid.dialogues.pkl"
+    state['dictionary'] = "../TwitterDataBPE/Dataset.dict.pkl"
+    state['save_dir'] = "Output"
+
+    state['max_grad_steps'] = 80
+
+    state['valid_freq'] = 5000
+
+    state['prefix'] = "TwitterModel_"
+    state['updater'] = 'adam'
+
+    state['bidirectional_utterance_encoder'] = True
+
+    state['deep_dialogue_input'] = False
+    state['deep_out'] = True
+
+    state['bs'] = 80
+    state['decoder_bias_type'] = 'all' # Choose between 'first', 'all' and 'selective'
+
+    state['direct_connection_between_encoders_and_decoder'] = True
+    state['deep_direct_connection'] = False
+
+    state['qdim_encoder'] = 1000
+    state['qdim_decoder'] = 2000
+    state['sdim'] = 1000
+    state['rankdim'] = 400
+
+    state['utterance_decoder_gating'] = 'GRU'
+
+    state['add_latent_gaussian_per_utterance'] = False
+    state['latent_gaussian_per_utterance_dim'] = 10
+    state['scale_latent_gaussian_variable_variances'] = 0.1
+
+    state['condition_latent_variable_on_dialogue_encoder'] = True
+    state['train_latent_variables_with_kl_divergence_annealing'] = True
+    state['kl_divergence_annealing_rate'] = 1.0/60000.0
+    state['decoder_drop_previous_input_tokens'] = True
+    state['decoder_drop_previous_input_tokens_rate'] = 0.75
+
+    state['patience'] = 20
+
+    return state
+
+
+
+
 

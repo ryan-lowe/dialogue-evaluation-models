@@ -61,7 +61,7 @@ def Adadelta(grads, decay=0.95, epsilon=1e-6):
 
         # Compute update
         rms_dx_tm1 = T.sqrt(mean_square_dx + epsilon)
-        rms_grad_t = T.sqrt(new_mean_squared_grad + epsilon) 
+        rms_grad_t = T.sqrt(new_mean_squared_grad + epsilon)
         delta_x_t = - rms_dx_tm1 / rms_grad_t * grads[param]
 
         # Accumulate updates
@@ -77,10 +77,10 @@ def Adadelta(grads, decay=0.95, epsilon=1e-6):
 
     return updates
 
-def RMSProp(grads, lr, decay=0.95, eta=0.9, epsilon=1e-6): 
-    """ 
+def RMSProp(grads, lr, decay=0.95, eta=0.9, epsilon=1e-6):
+    """
     RMSProp gradient method
-    """ 
+    """
     updates = OrderedDict()
     for param in grads.keys():
         # mean_squared_grad := E[g^2]_{t-1}
@@ -90,17 +90,17 @@ def RMSProp(grads, lr, decay=0.95, eta=0.9, epsilon=1e-6):
 
         if param.name is None:
             raise ValueError("Model parameters must be named.")
-        
+
         mean_square_grad.name = 'mean_square_grad_' + param.name
-        
+
         # Accumulate gradient
-        
+
         new_mean_grad = (decay * mean_grad + (1 - decay) * grads[param])
         new_mean_squared_grad = (decay * mean_square_grad + (1 - decay) * T.sqr(grads[param]))
 
-        # Compute update 
+        # Compute update
         scaled_grad = grads[param] / T.sqrt(new_mean_squared_grad - new_mean_grad ** 2 + epsilon)
-        new_delta_grad = eta * delta_grad - lr * scaled_grad 
+        new_delta_grad = eta * delta_grad - lr * scaled_grad
 
         # Apply update
         updates[delta_grad] = new_delta_grad
@@ -108,7 +108,7 @@ def RMSProp(grads, lr, decay=0.95, eta=0.9, epsilon=1e-6):
         updates[mean_square_grad] = new_mean_squared_grad
         updates[param] = param + new_delta_grad
 
-    return updates 
+    return updates
 
 class Maxout(object):
     def __init__(self, maxout_part):
@@ -131,9 +131,9 @@ class Maxout(object):
 def UniformInit(rng, sizeX, sizeY, lb=-0.01, ub=0.01):
     """ Uniform Init """
     return rng.uniform(size=(sizeX, sizeY), low=lb, high=ub).astype(theano.config.floatX)
- 
+
 def OrthogonalInit(rng, sizeX, sizeY, sparsity=-1, scale=1):
-    """ 
+    """
     Orthogonal Initialization
     """
 
@@ -167,31 +167,45 @@ def GrabProbs(classProbs, target, gRange=None):
         classProbs = classProbs.reshape((classProbs.shape[0] * classProbs.shape[1], classProbs.shape[2]))
     else:
         classProbs = classProbs
-    
+
     if target.ndim > 1:
         tflat = target.flatten()
     else:
-        tflat = target 
+        tflat = target
     return T.diag(classProbs.T[tflat])
 
 def NormalInit(rng, sizeX, sizeY, scale=0.01, sparsity=-1):
-    """ 
+    """
     Normal Initialization
     """
 
     sizeX = int(sizeX)
     sizeY = int(sizeY)
-    
+
     if sparsity < 0:
         sparsity = sizeY
-     
+
     sparsity = numpy.minimum(sizeY, sparsity)
     values = numpy.zeros((sizeX, sizeY), dtype=theano.config.floatX)
     for dx in xrange(sizeX):
         perm = rng.permutation(sizeY)
         new_vals = rng.normal(loc=0, scale=scale, size=(sparsity,))
         values[dx, perm[:sparsity]] = new_vals
-        
+
+    return values.astype(theano.config.floatX)
+
+def NormalInit3D(rng, sizeX, sizeY, sizeZ, scale=0.01, sparsity=-1):
+    """ 
+    Normal Initialization for 3D tensor
+    """
+
+    sizeX = int(sizeX)
+    sizeY = int(sizeY)
+    sizeZ = int(sizeZ)
+    values = numpy.zeros((sizeX, sizeY, sizeZ), dtype=theano.config.floatX)
+    for i in range(sizeZ):
+        values[:,:,i] = NormalInit(rng, sizeX, sizeY, scale, sparsity)
+
     return values.astype(theano.config.floatX)
 
 def ConvertTimedelta(seconds_diff): 
@@ -204,24 +218,140 @@ def SoftMax(x):
     x = T.exp(x - T.max(x, axis=x.ndim-1, keepdims=True))
     return x / T.sum(x, axis=x.ndim-1, keepdims=True)
 
-# Does batch normalization of input variable
-def VariableNormalization(x, mask=None, axes=0):
-    if mask:
-         mask = mask.dimshuffle(0, 1, 'x')
-         x_masked = x*mask
+def stable_log(x):
+    return T.log(T.maximum(x, 0.0000000001))
 
-         average = T.sum(x_masked, axis=axes)/T.sum(mask, axis=axes)
-         if average.ndim == 1:
-             x_zero_average = x_masked - average.dimshuffle('x', 'x', 0)
-         else:
-             x_zero_average = x_masked - average.dimshuffle('x', 0)
 
-         x_std = T.sqrt(T.sum(x_zero_average**2)/T.sum(mask, axis=axes) + 0.0000001)
-         return x_zero_average / x_std
+
+# Performs either batch normalization or layer normalization
+def NormalizationOperator(normop_type, x, gamma, mask, estimated_mean=0.0, estimated_var=1.0):
+    if normop_type.upper() == 'BN':
+        if x.ndim == 3:
+            return FeedforwardBatchNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0)
+        elif x.ndim == 2:
+            return RecurrentBatchNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0)
+    elif normop_type.upper() == 'LN':
+        return LayerNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0)
+    elif normop_type.upper() == 'NONE' or normop_type.upper() == '':
+        assert x.ndim == 3 or x.ndim == 2
+
+        output = x + 0.0*gamma
+        if x.ndim == 3:
+            x_mean = T.mean(x, axis=1).dimshuffle(0, 1, 'x')
+            x_var = T.var(x, axis=1).dimshuffle(0, 1, 'x')
+        else:
+            x_mean = T.mean(x, axis=1).dimshuffle(0, 'x')
+            x_var = T.var(x, axis=1).dimshuffle(0, 'x')
+
+        return output, x_mean[0], x_var[0]
     else:
-         return (x - T.mean(x, axis=axes)) / T.sqrt(T.var(x, axis=axes) + 0.0000001)
+        raise ValueError("Error! normop_type must take a value in set {\'BN\', \'LN\', \'NONE\'}!")
+
+
+# Batch normalization of input variable on first and second tensor indices (time x batch example x hidden units)
+# Elements where mask is zero, will not be used to compute the mean and variance estimates,
+# however these elements will still be batch normalized.
+def FeedforwardBatchNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0):
+    assert x.ndim == 3
+    if mask:
+        assert mask.ndim == 2
+        mask = mask.dimshuffle(0, 1, 'x')
+
+        mask_nonzeros = T.sum(T.sum(mask, axis=0), axis=0)
+        mask_nonzeros_weight = T.cast(T.minimum(1.0, T.sum(mask, axis=0)) / mask.shape[1], 'float32')
+
+        x_masked = x*mask
+
+        x_mean = (T.sum(T.sum(x_masked, axis=0), axis=0)/mask_nonzeros).dimshuffle('x', 'x', 0)
+        x_mean_adjusted = mask_nonzeros_weight*x_mean + (1.0 - mask_nonzeros_weight)*estimated_mean
+        x_zero_mean = x - x_mean_adjusted
+
+        x_var = (T.sum(T.sum(x_zero_mean**2, axis=0), axis=0)/mask_nonzeros).dimshuffle('x', 'x', 0)
+        x_var_adjusted = mask_nonzeros_weight*x_var + (1.0 - mask_nonzeros_weight)*estimated_var
+
+    else:
+        x_mean = estimated_mean.dimshuffle('x', 'x', 0)
+        x_mean_adjusted = x_mean
+
+        x_zero_mean = x - x_mean
+
+        x_var = estimated_var.dimshuffle('x', 'x', 0)
+        x_var_adjusted = x_var
+
+
+    return gamma*(x_zero_mean / T.sqrt(x_var_adjusted+1e-7)), x_mean_adjusted[0, 0], x_var_adjusted[0, 0]
+
+# Batch normalization of input variable on first tensor index (time x batch example x hidden units)
+# Elements where mask is zero, will not be used to compute the mean and variance estimates,
+# however these elements will still be batch normalized.
+def RecurrentBatchNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0):
+    assert x.ndim == 2
+    assert mask.ndim == 1
+
+
+    mask = mask.dimshuffle(0, 'x')
+
+    mask_nonzeros = T.sum(mask, axis=0)
+    mask_nonzeros_weight = mask_nonzeros / T.sum(T.ones_like(mask), axis=0)
+
+    x_masked = x*mask
+
+    x_mean = (T.sum(x_masked, axis=0)/mask_nonzeros).dimshuffle('x', 0)
+    x_mean_adjusted = mask_nonzeros_weight*x_mean + (1.0 - mask_nonzeros_weight)*estimated_mean
+    
+    x_zero_mean = x - x_mean_adjusted #x_zero_mean = x_masked - x_mean_adjusted
+
+    x_var = T.sum(x_zero_mean**2, axis=0)/mask_nonzeros.dimshuffle('x', 0)
+    x_var_adjusted = mask_nonzeros_weight*x_var + (1.0 - mask_nonzeros_weight)*estimated_var
+
+    return gamma*(x_zero_mean / T.sqrt(x_var_adjusted+1e-7)), x_mean_adjusted[0], x_var_adjusted[0]
+
+# Performs layer normalization of input variable on last tensor index,
+# where we assume variable has shape (time x batch example x hidden units) or (batch example x hidden units).
+# Similar to batch normalization, the function also returns the mean and variance across hidden units.
+def LayerNormalization(x, gamma, mask, estimated_mean=0.0, estimated_var=1.0):
+    assert x.ndim == 3 or x.ndim == 2
+    if x.ndim == 3:
+        x_mean = T.mean(x, axis=2).dimshuffle(0, 1, 'x')
+        x_var = T.var(x, axis=2).dimshuffle(0, 1, 'x')
+        return gamma*((x - x_mean) / T.sqrt(x_var+1e-7)), x_mean[0, 0], x_var[0, 0]
+
+    elif x.ndim == 2:
+        x_mean = T.mean(x, axis=1).dimshuffle(0, 'x')
+        x_var = T.var(x, axis=1).dimshuffle(0, 'x')
+        return gamma*((x - x_mean) / T.sqrt(x_var+1e-7)), x_mean[0], x_var[0]
 
 
 
+# Does theano.batched_dot. If last_axis is on it will loop over the last axis, otherwise it will loop over the first axis.
+def BatchedDot(x, y, last_axis=False):
+    if last_axis==False:
+        return T.batched_dot(x, y)
+    elif last_axis:
+        if x.ndim == 2:
+            shuffled_x = x.dimshuffle(1,0)
+        elif x.ndim == 3:
+            shuffled_x = x.dimshuffle(2,0,1)
+        elif x.ndim == 4:
+            shuffled_x = x.dimshuffle(3,0,1,2)
+        else:
+            raise ValueError('BatchedDot inputs must have between 2-4 dimensions, but x has ' + str(x.ndim) + ' dimensions')
+
+        if y.ndim == 2:
+            shuffled_y = y.dimshuffle(1,0)
+        elif y.ndim == 3:
+            shuffled_y = y.dimshuffle(2,0,1)
+        elif y.ndim == 4:
+            shuffled_y = y.dimshuffle(3,0,1,2)
+        else:
+            raise ValueError('BatchedDot inputs must have between 2-4 dimensions, but y has ' + str(y.ndim) + ' dimensions')
+
+        dot = T.batched_dot(shuffled_x, shuffled_y)
+        if dot.ndim == 2:
+            return dot.dimshuffle(1,0)
+        elif dot.ndim == 3:
+            return dot.dimshuffle(1,2,0)
+        elif dot.ndim == 4:
+            return dot.dimshuffle(1,2,3,0)
 
 
