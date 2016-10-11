@@ -307,8 +307,6 @@ if __name__ == '__main__':
         print 'Computing context embeddings...'
         twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model)
 
-        print 'twitter_context_embeddings', twitter_context_embeddings[0].shape
-
         print 'Computing ground truth response embeddings...'
         twitter_gtresponses_embeddings = compute_model_embeddings(twitter_gtresponses_ids, model)
 
@@ -343,11 +341,6 @@ if __name__ == '__main__':
     test_x = twitter_dialogue_embeddings[train_index:]
     train_y = np.array(twitter_human_scores[:train_index])
     test_y = np.array(twitter_human_scores[train_index:])
-
-    print 'train_x', train_x
-    print 'test_x', test_x
-    print 'train_y', train_y
-    print 'test_y', test_y
 
     train_model(train_x, test_x, train_y, test_y)
 
