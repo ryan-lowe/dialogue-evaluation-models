@@ -59,6 +59,7 @@ def preprocess_tweet(s):
     return s
 
 def strs_to_idxs(data, bpe, str_to_idx):
+    ''' Encodes strings in BPE form '''
     out = []
     for row in data:
         bpe_segmented = bpe.segment(row.strip())
@@ -71,23 +72,23 @@ def strs_to_idxs(data, bpe, str_to_idx):
 def get_context(data):
     out = []
     for row in data:
-        out.append('</s> ' + preprocess_tweet(row[0][5:-2]))
+       out.append('</s> ' + preprocess_tweet(row[0][5:-2])) 
+       # TODO: this also puts the </s> token at the beginning of every context... 
+       # is that what we want?
 
     return out
 
-# TODO: Double check this indexing is correct...
 def get_gtresponse(data):
     out = []
     for row in data:
-        out.append(preprocess_tweet(row[1][5:-2]))
+        out.append(preprocess_tweet(row[2][5:-2]))
 
     return out
 
-# TODO: Double check this indexing is correct...
 def get_modelresponse(data):
     out = []
     for row in data:
-        out.append(preprocess_tweet(row[2][5:-2]))
+        out.append(preprocess_tweet(row[1][5:-2]))
 
     return out
 
@@ -267,7 +268,9 @@ if __name__ == '__main__':
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
 
-    twitter_model_prefix = '../TwitterModel/1470516214.08_TwitterModel__405001'
+    twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
+    # previously: '../TwitterModel/1470516214.08_TwitterModel__405001'
+    # changed due to disk space limitations on Ryan's machine
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
