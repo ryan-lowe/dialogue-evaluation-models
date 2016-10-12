@@ -20,6 +20,7 @@ import theano.tensor as T
 import time
 import math
 import cPickle
+from sklearn.decomposition import PCA
 
 from dialog_encdec import DialogEncoderDecoder
 from numpy_compat import argpartition
@@ -148,9 +149,10 @@ class LinearEvalModel(object):
 
     input has shape (batch size x 3 x emb dimensionality)
     """
-    def __init__(self, input, emb_dim, batch_size):
+    def __init__(self, input, emb_dim, batch_size, feat_dim):
         self.M = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.N = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
+        self.f = theano.shared(np.zeros((feat_dim,)).astype(theano.config.floatX), borrow=True)
         
         # Set embeddings by slicing tensor
         self.emb_context = input[:,0,:]
@@ -176,7 +178,7 @@ class LinearEvalModel(object):
 
 
 def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=10,
-        batch_size=1):
+        batch_size=1, feat_size=0):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -189,8 +191,10 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     index = T.lscalar()
     x = T.tensor3('x')
     y = T.fvector('y')
+
+    extra_features = get_features()
     
-    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size)
+    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_size=feat_size)
 
     # TODO: Try out L2 regularization
     cost = model.squared_error(y)
@@ -260,6 +264,7 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
 
 if __name__ == '__main__':
     test_pct = 0.5
+    pca_components = 50
 
     ubuntu_file = '../ubuntu_human_data.csv'
     twitter_file = '../twitter_human_data.csv'
@@ -320,7 +325,7 @@ if __name__ == '__main__':
         assert len(twitter_context_embeddings) == len(twitter_modelresponses_embeddings)
 
         emb_dim = twitter_context_embeddings[0].shape[0]
-
+        
         twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
         for i in range(len(twitter_context_embeddings)):
             twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
@@ -335,16 +340,20 @@ if __name__ == '__main__':
         print 'ERROR: No GPU specified!'
         print ' To save testing time, model will be trained with zero context / response embeddings...'
         twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-
-    # TODO: Compute PCA projection here
     
+    pca = PCA(n_components = pca_components)
+    tw_embeddings_pca = np.zeros((len(twitter_context_embeddings), 3, pca_components))
+    for i in range(3):
+        tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
+
     # Separate into training and test sets
     train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
-    train_x = twitter_dialogue_embeddings[:train_index]
-    test_x = twitter_dialogue_embeddings[train_index:]
+    train_x = tw_embeddings_pca[:train_index]
+    test_x = tw_embeddings_pca[train_index:]
     train_y = np.array(twitter_human_scores[:train_index])
     test_y = np.array(twitter_human_scores[train_index:])
-
+    
+    print 'Training model...'
     train_model(train_x, test_x, train_y, test_y)
 
 
