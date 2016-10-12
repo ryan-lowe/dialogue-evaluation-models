@@ -21,6 +21,9 @@ import time
 import math
 import cPickle
 from sklearn.decomposition import PCA
+from pycocoevalcap.bleu.bleu import Bleu
+from pycocoevalcap.rouge.rouge import Rouge
+from pycocoevalcap.meteor.meteor import Meteor
 
 from dialog_encdec import DialogEncoderDecoder
 from numpy_compat import argpartition
@@ -117,6 +120,22 @@ def compute_model_embeddings(data, model):
 
     return embeddings
 
+def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
+    aux_features = np.zeros((num_examples, 4))
+    bleu2 = []
+    bleu3 = []
+    meteor = []
+    rouge = []
+    for i in xrange(num_examples):
+        bleu2.append(Bleu(2).compute_score(gtresponses[i], modelresponses[i]))
+        bleu3.append(Bleu(3).compute_score(gtresponses[i], modelresponses[i]))
+        rouge.append(Rouge().compute_score(gtresponses[i], modelresponses[i]))
+        meteor.append(Meteor().compute_score(gtresponses[i], modelresponses[i]))
+    aux_features[:,0] = bleu2
+    aux_features[:,1] = bleu3
+    aux_features[:,2] = rouge
+    aux_features[:,3] = meteor
+    return aux_features
 
 def make_plot(model_scores, human_scores, filename):
     pp.plot(human_scores, model_scores, 'ko')
@@ -149,7 +168,7 @@ class LinearEvalModel(object):
 
     input has shape (batch size x 3 x emb dimensionality)
     """
-    def __init__(self, input, emb_dim, batch_size, feat_dim):
+    def __init__(self, input, emb_dim, batch_size, feat_size=0, aux_features=None):
         self.M = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.N = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.f = theano.shared(np.zeros((feat_dim,)).astype(theano.config.floatX), borrow=True)
@@ -163,7 +182,10 @@ class LinearEvalModel(object):
         # Compute predictions
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
         self.pred2 = T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
-        self.pred = self.pred1 + self.pred2
+        self.pred3 = 0
+        if self.aux_features != None:
+            self.pred3 = T.dot(self.f, self.aux_features)
+        self.pred = self.pred1 + self.pred2 + self.pred3
 
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
         #         Let's just try with a linear output first. We can always clip it to be within [0, 5] later.
@@ -178,7 +200,7 @@ class LinearEvalModel(object):
 
 
 def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=10,
-        batch_size=1, feat_size=0):
+        batch_size=1, feat_size=0, aux_features=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -191,10 +213,9 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     index = T.lscalar()
     x = T.tensor3('x')
     y = T.fvector('y')
-
-    extra_features = get_features()
+    feat = T.fvector('feat')
     
-    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_size=feat_size)
+    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_size=feat_size, aux_features=feat)
 
     # TODO: Try out L2 regularization
     cost = model.squared_error(y)
@@ -217,8 +238,10 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     
     g_M = T.grad(cost=cost, wrt=model.M)
     g_N = T.grad(cost=cost, wrt=model.N)
+    g_feat = T.grad(cost=cost, wrt=model.feat)
     updates = [ (model.M, model.M - learning_rate * g_M),
-                (model.N, model.N - learning_rate * g_N) ]
+                (model.N, model.N - learning_rate * g_N)
+                (model.feat, model.feat - learning_rate * g_feat) ]
 
     train_model = theano.function(
         inputs=[index],
@@ -250,8 +273,8 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
             best_correlation = test_correlation[0][0]
             best_cor = test_correlation
             best_output = get_output()
-            with open('best_model.pkl', 'w') as f:
-                cPickle.dump(model, f)
+            #with open('best_model.pkl', 'w') as f:
+            #    cPickle.dump(model, f)
 
     end_time = time.time()
     print 'Finished training. Took %f s'%(end_time - start_time)
@@ -265,6 +288,7 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
 if __name__ == '__main__':
     test_pct = 0.5
     pca_components = 50
+    use_aux_features = False
 
     ubuntu_file = '../ubuntu_human_data.csv'
     twitter_file = '../twitter_human_data.csv'
@@ -353,8 +377,13 @@ if __name__ == '__main__':
     train_y = np.array(twitter_human_scores[:train_index])
     test_y = np.array(twitter_human_scores[train_index:])
     
+    print 'Computing auxiliar features...'
+    aux_features = None
+    if use_aux_features:
+        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
+
     print 'Training model...'
-    train_model(train_x, test_x, train_y, test_y)
+    train_model(train_x, test_x, train_y, test_y, aux_features=aux_features)
 
 
     # Start training with:
