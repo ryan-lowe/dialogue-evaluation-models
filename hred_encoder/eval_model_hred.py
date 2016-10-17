@@ -168,7 +168,7 @@ class LinearEvalModel(object):
 
     input has shape (batch size x 3 x emb dimensionality)
     """
-    def __init__(self, input, emb_dim, batch_size, feat_size=0, aux_features=None):
+    def __init__(self, input, emb_dim, batch_size, feat_dim=0, aux_features=None):
         self.M = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.N = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.f = theano.shared(np.zeros((feat_dim,)).astype(theano.config.floatX), borrow=True)
@@ -183,8 +183,8 @@ class LinearEvalModel(object):
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
         self.pred2 = T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
         self.pred3 = 0
-        if self.aux_features != None:
-            self.pred3 = T.dot(self.f, self.aux_features)
+        # TODO: add condition here that works
+        #self.pred3 = T.dot(self.f, self.aux_features)
         self.pred = self.pred1 + self.pred2 + self.pred3
 
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
@@ -200,7 +200,7 @@ class LinearEvalModel(object):
 
 
 def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=10,
-        batch_size=1, feat_size=0, aux_features=None):
+        batch_size=1, feat_dim=0, aux_features=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -215,7 +215,7 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     y = T.fvector('y')
     feat = T.fvector('feat')
     
-    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_size=feat_size, aux_features=feat)
+    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_dim=feat_dim, aux_features=feat)
 
     # TODO: Try out L2 regularization
     cost = model.squared_error(y)
@@ -238,10 +238,10 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     
     g_M = T.grad(cost=cost, wrt=model.M)
     g_N = T.grad(cost=cost, wrt=model.N)
-    g_feat = T.grad(cost=cost, wrt=model.feat)
+    #g_feat = T.grad(cost=cost, wrt=model.feat)
     updates = [ (model.M, model.M - learning_rate * g_M),
-                (model.N, model.N - learning_rate * g_N)
-                (model.feat, model.feat - learning_rate * g_feat) ]
+                (model.N, model.N - learning_rate * g_N) ]
+                #(model.feat, model.feat - learning_rate * g_feat) ]
 
     train_model = theano.function(
         inputs=[index],
