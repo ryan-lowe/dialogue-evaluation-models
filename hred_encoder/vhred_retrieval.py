@@ -66,31 +66,42 @@ def idxs_to_strs(data, bpe, idx_to_str):
     ''' Converts from BPE form to strings '''
     out = []
     for row in data:
-        out.append(' '.join([idx_to_str[idx] for idx in row if idx in idx_to_str]).replace('@@',''))
-
+        out.append(' '.join([idx_to_str[idx] for idx in row if idx in idx_to_str]).replace('@@ ',''))
     return out
 
 
 # Compute model embeddings for contexts or responses 
-def compute_model_embeddings(data, model):
+def compute_model_embeddings(data, model, ftype):
     model_compute_encoding = model.build_encoder_function()
 
     embeddings = []
     context_ids_batch = []
     batch_index = 0
     batch_total = int(math.ceil(float(len(data)) / float(model.bs)))
+    counter = 0
+    fcounter = 0
+    start = time.time()
     for context_ids in data:
         context_ids_batch.append(context_ids)
 
         if len(context_ids_batch) == model.bs:
+            counter += 1
             batch_index = batch_index + 1
 
-            print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total)
+            print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total),
             encs = compute_encodings(context_ids_batch, model, model_compute_encoding)
             for i in range(len(encs)):
                 embeddings.append(encs[i])
 
             context_ids_batch = []
+            print time.time() - start
+            start = time.time()
+
+        if counter % 1000 == 0 or counter == len(data):
+            fcounter += 1
+
+            cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
+            embeddings = []
 
     return embeddings
 
@@ -142,8 +153,8 @@ if __name__ == '__main__':
     twitter_idx_to_str = dict([(tok_id, tok) for tok, tok_id, _, _ in twitter_dict])
     
     # Get data, for Twitter
-    train_file = '/home/ml/rlowe1/TwitterData/Training.dialogues.pkl'
-    test_file = '/home/ml/rlowe1/TwitterData/Test.dialogues.pkl'
+    train_file = '/home/ml/rlowe1/TwitterData/TwitterDataBPE/Train.dialogues.pkl'
+    test_file = '/home/ml/rlowe1/TwitterData/TwitterDataBPE/Test.dialogues.pkl'
     output_file = './output.csv'
 
     with open(train_file) as f1:
@@ -160,8 +171,8 @@ if __name__ == '__main__':
     test_responses_txt = idxs_to_strs(test_responses, twitter_bpe, twitter_idx_to_str)
 
 
-    print train_context_txt[0:20]
-    print train_responses_txt[0:20]
+    print train_context_txt[0:2]
+    print train_responses_txt[0:2]
 
     # Encode text into BPE format
     #twitter_context_ids = strs_to_idxs(twitter_contexts, twitter_bpe, twitter_str_to_idx)
@@ -181,17 +192,33 @@ if __name__ == '__main__':
         state['dictionary'] = twitter_model_dictionary
 
         model = DialogEncoderDecoder(state) 
+        
+        if load_embeddings == True:
+            train_emb_data_file = twitter_data_prefix + 'train_context_emb'
+            test_emb_data_file = twitter_data_prefix + 'test_context_emb'
+            train_embfile_num = 2
+            test_embfile_num = 2
+            
+            print 'Loading training context embeddings...'
+            train_emb = []
+            for i in xrange(train_embfile_num):
+                train_emb.append(cPickle.load(train_emb_data_file))
+            
+            print 'Loading testing context embeddings...'
+            for i in xrange(test_embfile_num):
+                    test_emb.append(cPickle.load(test_emb_data_file))
 
-        print 'Computing training context embeddings...'
-        train_context_embeddings = compute_model_embeddings(train_contexts, model)
-        cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
+        else:
+            print 'Computing training context embeddings...'
+            train_context_embeddings = compute_model_embeddings(train_contexts, model, 'train')
+            #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
 
-        print 'Computing test context embeddings...'
-        test_context_embeddings = compute_model_embeddings(test_contexts, model)
-        cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
+            print 'Computing test context embeddings...'
+            test_context_embeddings = compute_model_embeddings(test_contexts, model, 'test')
+            #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
 
         
-        assert len(train_context_embeddings) == len(test_context_embeddings)
+        #assert len(train_context_embeddings) == len(test_context_embeddings)
 
         emb_dim = train_context_embeddings[0].shape[0]
 

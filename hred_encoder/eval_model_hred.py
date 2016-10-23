@@ -96,6 +96,45 @@ def get_modelresponse(data):
 
     return out
 
+def get_twitter_data(clean_data_file, context_file, gt_file):
+    '''
+    Loads Twitter data from dictionaries.
+    '''
+    with open(clean_data_file, 'r') as f1:
+        clean_data = cPickle.load(f1)
+    with open(context_file, 'r') as f1:
+        contexts = cPickle.load(f1)
+    gt_unordered = []
+    with open(gt_file, 'r') as f1:
+        for row in f1:
+            gt_unordered.append(row)
+    
+    # Retrieve scores and valid context ids from clean_data.pkl
+    score_dic = {}
+    for user in clean_data:
+        for dic in clean_data[user]:
+            if int(dic['c_id']) >= 0:
+                score_dic[dic['c_id']] = [dic['overall1'], dic['overall2'], dic['overall3'], dic['overall4']]
+
+    context_list = []
+    gt_responses = []
+    model_responses = []
+    scores = []
+
+    # Retrieve contexts and model responses from contexts.pkl
+    for c in contexts:
+        if int(c[0]) in score_dic:
+            context_list.append(c[1])
+            model_responses.append(c[2:6])
+            scores.append(score_dic[int(c[0])])
+            gt_responses.append(gt_unordered[int(c[0])])
+    model_responses = [i for sublist in model_responses for i in sublist] # flatten list
+    scores = [float(i) for sublist in scores for i in sublist] # flatten list
+    
+    return context_list, gt_responses, model_responses, scores
+
+
+
 
 # Compute model embeddings for contexts or responses 
 def compute_model_embeddings(data, model):
@@ -105,11 +144,13 @@ def compute_model_embeddings(data, model):
     context_ids_batch = []
     batch_index = 0
     batch_total = int(math.ceil(float(len(data)) / float(model.bs)))
+    counter = 0 
     for context_ids in data:
+        counter += 1
         context_ids_batch.append(context_ids)
 
-        if len(context_ids_batch) == model.bs:
-            batch_index = batch_index + 1
+        if len(context_ids_batch) == model.bs or counter == len(data):
+            batch_index += 1
 
             print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total)
             encs = compute_encodings(context_ids_batch, model, model_compute_encoding)
@@ -199,7 +240,7 @@ class LinearEvalModel(object):
 
 
 
-def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=10,
+def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
         batch_size=1, feat_dim=0, aux_features=None):
     
     print '...building model'
@@ -261,12 +302,17 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     best_correlation = -np.inf
     start_time = time.time()
     while (epoch < num_epochs):
-        epoch += 1
+        epoch += 1    
         print 'Starting epoch',epoch
+        cost_list = []
         for minibatch_index in xrange(n_train_batches):
             minibatch_cost = train_model(minibatch_index)
+            cost_list.append(minibatch_cost)
         model_out = get_output()
-
+        print cost_list
+        print sum(cost_list)
+#        print 'Loss is ' + str(float(sum(cost_list))/len(cost_list))
+        
         test_correlation = correlation(model_out, test_y)
         print test_correlation
         if test_correlation[0][0] > best_correlation:
@@ -286,13 +332,23 @@ def train_model(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs
     
 
 if __name__ == '__main__':
-    test_pct = 0.5
-    pca_components = 50
+    test_pct = 0.2
+    pca_components = 200
     use_aux_features = False
+    use_precomputed_embeddings = True
 
-    ubuntu_file = '../ubuntu_human_data.csv'
-    twitter_file = '../twitter_human_data.csv'
-    #embedding_file = './hred_embeddings.pkl'
+    print 'Loading data...'
+    
+    #ubuntu_file = '../ubuntu_human_data.csv'
+    #twitter_file = '../twitter_human_data.csv'
+    clean_data_file = '../clean_data.pkl'   # Dictionary with userid as key, list of dicts as values, where each
+                                            # dict represents a single context (c_id is the key for looking up contexts in context.pkl
+    twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
+    twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
+    
+    context_embedding_file = './context_emb.pkl'
+    modelresponses_embedding_file = './modelresponses_emb.pkl'
+    gtresponses_embedding_file = './gtresponses_emb.pkl'
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
@@ -300,6 +356,10 @@ if __name__ == '__main__':
     twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
     # previously: '../TwitterModel/1470516214.08_TwitterModel__405001'
     # changed due to disk space limitations on Ryan's machine
+    
+    # Load Twitter evaluation data from .pkl files
+    twitter_contexts, twitter_gtresponses, twitter_modelresponses, twitter_human_scores = get_twitter_data(clean_data_file, \
+            twitter_file, twitter_gt_file)
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
@@ -310,20 +370,30 @@ if __name__ == '__main__':
     #ubuntu_data = load_data(ubuntu_file)
     #ubuntu_human_scores = get_score(ubuntu_data)
 
-    # Get data, for Twitter
-    twitter_data = np.array(load_data(twitter_file))
-    twitter_contexts = get_context(twitter_data)
-    twitter_gtresponses = get_gtresponse(twitter_data)
-    twitter_modelresponses = get_modelresponse(twitter_data)
-    twitter_human_scores = get_score(twitter_data)
+    # Get data, for Twitter (with old formatting)
+    #twitter_data = np.array(load_data(twitter_file))
+    #twitter_contexts = get_context(twitter_data)
+    #twitter_gtresponses = get_gtresponse(twitter_data)
+    #twitter_modelresponses = get_modelresponse(twitter_data)
+    #twitter_human_scores = get_score(twitter_data)
 
     # Encode text into BPE format
     twitter_context_ids = strs_to_idxs(twitter_contexts, twitter_bpe, twitter_str_to_idx)
     twitter_gtresponses_ids = strs_to_idxs(twitter_gtresponses, twitter_bpe, twitter_str_to_idx)
     twitter_modelresponses_ids = strs_to_idxs(twitter_modelresponses, twitter_bpe, twitter_str_to_idx)
-
+    
     # Compute VHRED embeddings
-    if 'gpu' in theano.config.device.lower():
+    if use_precomputed_embeddings:
+        print 'Loading precomputed embeddings...'
+        with open(context_embedding_file, 'r') as f1:
+            twitter_context_embeddings = cPickle.load(f1)
+        with open(gtresponses_embedding_file, 'r') as f1:
+            twitter_gtresponses_embeddings = cPickle.load(f1)
+        with open(modelresponses_embedding_file, 'r') as f1:
+            twitter_modelresponses_embeddings = cPickle.load(f1)
+    
+    elif 'gpu' in theano.config.device.lower():
+        print 'Loading model...'
         state = prototype_state()
         state_path = twitter_model_prefix + "_state.pkl"
         model_path = twitter_model_prefix + "_model.npz"
@@ -335,27 +405,20 @@ if __name__ == '__main__':
         state['dictionary'] = twitter_model_dictionary
 
         model = DialogEncoderDecoder(state) 
-
+        
         print 'Computing context embeddings...'
         twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model)
-
+        with open(context_embedding_file, 'w') as f1:
+            cPickle.dump(twitter_context_embeddings, f1)
         print 'Computing ground truth response embeddings...'
         twitter_gtresponses_embeddings = compute_model_embeddings(twitter_gtresponses_ids, model)
-
+        with open(gtresponses_embedding_file, 'w') as f1:
+            cPickle.dump(twitter_gtresponses_embeddings, f1)
         print 'Computing model response embeddings...'
         twitter_modelresponses_embeddings = compute_model_embeddings(twitter_modelresponses_ids, model)
-        
-        assert len(twitter_context_embeddings) == len(twitter_gtresponses_embeddings)
-        assert len(twitter_context_embeddings) == len(twitter_modelresponses_embeddings)
-
-        emb_dim = twitter_context_embeddings[0].shape[0]
-        
-        twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-        for i in range(len(twitter_context_embeddings)):
-            twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
-            twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
-            twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
-
+        with open(modelresponses_embedding_file, 'w') as f1:
+            cPickle.dump(twitter_modelresponses_embeddings, f1)
+    
     else:
         # Set embeddings to 0 for now. alternatively, we can load them from disc...
         #embeddings = cPickle.load(open(embedding_file, 'rb'))
@@ -365,15 +428,42 @@ if __name__ == '__main__':
         print ' To save testing time, model will be trained with zero context / response embeddings...'
         twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
     
-    pca = PCA(n_components = pca_components)
-    tw_embeddings_pca = np.zeros((len(twitter_context_embeddings), 3, pca_components))
-    for i in range(3):
-        tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
 
+    # Copy the contexts and gt responses 4 times (to make it the same as for the model responses)
+    temp_c_emb = []
+    temp_gt_emb = []
+    for i in xrange(len(twitter_context_embeddings)):
+        temp_c_emb.append([twitter_context_embeddings[i]]*4)
+        temp_gt_emb.append([twitter_gtresponses_embeddings[i]]*4)
+    twitter_context_embeddings = [i for sublist in temp_c_emb for i in sublist]
+    twitter_gtresponses_embeddings = [i for sublist in temp_gt_emb for i in sublist]
+
+    assert len(twitter_context_embeddings) == len(twitter_gtresponses_embeddings)
+    assert len(twitter_context_embeddings) == len(twitter_modelresponses_embeddings)
+
+    emb_dim = twitter_context_embeddings[0].shape[0]
+    
+    twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+    for i in range(len(twitter_context_embeddings)):
+        twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
+        twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
+        twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
+
+    # Reduce the dimensionality  of the embeddings with PCA
+    # TODO: do PCA on all the embeddings, without separating context/ responses?
+    pca_components = 2000
+
+    if pca_components < emb_dim:
+        pca = PCA(n_components = pca_components)
+        tw_embeddings_pca = np.zeros((len(twitter_context_embeddings), 3, pca_components))
+        for i in range(3):
+            tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
+        twitter_dialogue_embeddings = tw_embeddings_pca
+    
     # Separate into training and test sets
     train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
-    train_x = tw_embeddings_pca[:train_index]
-    test_x = tw_embeddings_pca[train_index:]
+    train_x = twitter_dialogue_embeddings[:train_index]
+    test_x = twitter_dialogue_embeddings[train_index:]
     train_y = np.array(twitter_human_scores[:train_index])
     test_y = np.array(twitter_human_scores[train_index:])
     
@@ -383,7 +473,7 @@ if __name__ == '__main__':
         aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
 
     print 'Training model...'
-    train_model(train_x, test_x, train_y, test_y, aux_features=aux_features)
+    train(train_x, test_x, train_y, test_y, aux_features=aux_features)
 
 
     # Start training with:
