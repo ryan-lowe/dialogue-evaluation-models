@@ -205,6 +205,7 @@ if __name__ == '__main__':
                 train_emb.append(cPickle.load(train_emb_data_file))
             
             print 'Loading testing context embeddings...'
+            test_emb = []
             for i in xrange(test_embfile_num):
                     test_emb.append(cPickle.load(test_emb_data_file))
 

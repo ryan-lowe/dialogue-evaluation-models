@@ -93,7 +93,6 @@ def get_modelresponse(data):
     out = []
     for row in data:
         out.append(preprocess_tweet(row[1][5:-2]))
-
     return out
 
 def get_twitter_data(clean_data_file, context_file, gt_file):
@@ -133,8 +132,46 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
     
     return context_list, gt_responses, model_responses, scores
 
+# Prints BLEU, METEOR, etc. correlation scores on the test set
+def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct):
+    # Align ground truth with model responses
+    temp_gt = []
+    for i in xrange(len(twitter_gtresponses)):
+        temp_gt.append([twitter_gtresponses[i]]*4)
+    twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
 
+    assert len(twitter_modelresponses) == len(twitter_gtresponses)
+    assert len(twitter_modelresponses) == len(twitter_human_scores)
+   
+    #test_index = 0
+    test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
+    test_gtresponses = twitter_gtresponses[test_index:]
+    test_modelresponses = twitter_modelresponses[test_index:]
+    test_scores = twitter_human_scores[test_index:]
 
+    bleu1_list = []
+    bleu2_list = []
+    bleu3_list = []
+    bleu4_list = []
+    rouge_list = []
+    meteor_list = []
+    for i in xrange(len(test_modelresponses)):
+        bleu1_list.append(Bleu(1).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][0])
+        bleu2_list.append(Bleu(2).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][1])
+        bleu3_list.append(Bleu(3).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][2])
+        bleu4_list.append(Bleu(4).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][3])
+        rouge_list.append(Rouge().compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0])
+        #meteor_list.append(Meteor().compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]}))
+
+    metric_list = [bleu1_list, bleu2_list, bleu3_list, bleu4_list, rouge_list, meteor_list]
+    metric_name = ['bleu1', 'bleu2', 'bleu3', 'bleu4', 'rouge', 'meteor']
+    for metric, name in zip(metric_list, metric_name):
+        spearman = scipy.stats.spearmanr(metric, test_scores)
+        pearson = scipy.stats.pearsonr(metric, test_scores)
+        print 'For ' + name + ' score:'
+        print spearman
+        print pearson
+ 
 
 # Compute model embeddings for contexts or responses 
 def compute_model_embeddings(data, model):
@@ -231,7 +268,7 @@ class LinearEvalModel(object):
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
         #         Let's just try with a linear output first. We can always clip it to be within [0, 5] later.
         #self.output = 5 * T.clip(T.nnet.sigmoid(self.pred), 1e-7, 1 - 1e-7)
-        self.output = 2.5 + 5 * self.pred
+        self.output = 2.5 + 500*self.pred #/ 2000.0 # *5/10000 = /2000, to re-scale dot product values to [0,5] range
 
 
     def squared_error(self, score):
@@ -309,9 +346,8 @@ def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
             minibatch_cost = train_model(minibatch_index)
             cost_list.append(minibatch_cost)
         model_out = get_output()
-        print cost_list
-        print sum(cost_list)
-#        print 'Loss is ' + str(float(sum(cost_list))/len(cost_list))
+        print sum(cost_list) / float(len(cost_list))
+        print 'Loss is ' + str(float(sum(cost_list))/len(cost_list))
         
         test_correlation = correlation(model_out, test_y)
         print test_correlation
@@ -328,7 +364,6 @@ def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
     print 'Final Peason correlation: ', best_cor[1]
     make_plot(best_output, test_y, 'correlation_vhred_learned.png')
     make_plot(first_output, test_y, 'correlation_vhred_first.png')
-    make_plot(get_pred(), test_y, 'correlation_vhred_nosig.png')
     
 
 if __name__ == '__main__':
@@ -336,6 +371,7 @@ if __name__ == '__main__':
     pca_components = 200
     use_aux_features = False
     use_precomputed_embeddings = True
+    eval_overlap_metrics = False
 
     print 'Loading data...'
     
@@ -360,7 +396,10 @@ if __name__ == '__main__':
     # Load Twitter evaluation data from .pkl files
     twitter_contexts, twitter_gtresponses, twitter_modelresponses, twitter_human_scores = get_twitter_data(clean_data_file, \
             twitter_file, twitter_gt_file)
-
+    
+    if eval_overlap_metrics:
+        show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct)
+        
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
     twitter_dict = cPickle.load(open(twitter_model_dictionary, 'r'))
@@ -423,13 +462,11 @@ if __name__ == '__main__':
         # Set embeddings to 0 for now. alternatively, we can load them from disc...
         #embeddings = cPickle.load(open(embedding_file, 'rb'))
         print 'ERROR: No GPU specified!'
-        print 'ERROR: No GPU specified!'
-        print 'ERROR: No GPU specified!'
         print ' To save testing time, model will be trained with zero context / response embeddings...'
         twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
     
 
-    # Copy the contexts and gt responses 4 times (to make it the same as for the model responses)
+    # Copy the contexts and gt responses 4 times (to align with the model responses)
     temp_c_emb = []
     temp_gt_emb = []
     for i in xrange(len(twitter_context_embeddings)):
@@ -451,7 +488,7 @@ if __name__ == '__main__':
 
     # Reduce the dimensionality  of the embeddings with PCA
     # TODO: do PCA on all the embeddings, without separating context/ responses?
-    pca_components = 2000
+    pca_components = 50
 
     if pca_components < emb_dim:
         pca = PCA(n_components = pca_components)
@@ -460,6 +497,9 @@ if __name__ == '__main__':
             tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
         twitter_dialogue_embeddings = tw_embeddings_pca
     
+    # Calculate word-overlap metric scores on test set
+    train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+
     # Separate into training and test sets
     train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
     train_x = twitter_dialogue_embeddings[:train_index]
@@ -467,7 +507,7 @@ if __name__ == '__main__':
     train_y = np.array(twitter_human_scores[:train_index])
     test_y = np.array(twitter_human_scores[train_index:])
     
-    print 'Computing auxiliar features...'
+    print 'Computing auxiliary features...'
     aux_features = None
     if use_aux_features:
         aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
