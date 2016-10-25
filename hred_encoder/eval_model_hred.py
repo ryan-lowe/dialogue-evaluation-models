@@ -132,6 +132,14 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
     
     return context_list, gt_responses, model_responses, scores
 
+# Compute mean and range of dot products to find right constants in model
+def compute_init_values(emb):
+    prod_list = []
+    for i in xrange(len(emb[0][0])):
+        prod_list.append(np.dot(emb[i, 0], emb[i, 2]) + np.dot(emb[i, 1], emb[i, 2]))
+    return sum(prod_list) / float(len(prod_list)), max(prod_list) - min(prod_list)
+
+
 # Prints BLEU, METEOR, etc. correlation scores on the test set
 def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct):
     # Align ground truth with model responses
@@ -171,7 +179,29 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
         print 'For ' + name + ' score:'
         print spearman
         print pearson
- 
+
+# Computes PCA decomposition for the context, gt responses, and model responses separately
+def compute_separate_pca(pca_components, twitter_dialogue_embeddings):
+    pca = PCA(n_components = pca_components)
+    tw_embeddings_pca = np.zeros((twitter_dialogue_embeddings.shape[0], 3, pca_components))
+    for i in range(3):
+        tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
+    return tw_embeddings_pca
+
+# Computes PCA decomposition for the context, gt responses, and model responses together
+def compute_pca(pca_components, twitter_dialogue_embeddings):
+    pca = PCA(n_components = pca_components)
+    num_ex = twitter_dialogue_embeddings.shape[0]
+    dim = twitter_dialogue_embeddings.shape[2]
+    tw_embeddings_pca = np.zeros((num_ex * 3, dim))
+    for i in range(3):
+        tw_embeddings_pca[num_ex*i: num_ex*(i+1),:] = twitter_dialogue_embeddings[:,i]
+    tw_embeddings_pca = pca.fit_transform(tw_embeddings_pca)
+    tw_emb = np.zeros((num_ex, 3, pca_components))
+    for i in range(3):
+        tw_emb[:,i] = tw_embeddings_pca[num_ex*i: num_ex*(i+1),:]
+    return tw_emb
+
 
 # Compute model embeddings for contexts or responses 
 def compute_model_embeddings(data, model):
@@ -216,8 +246,16 @@ def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
     return aux_features
 
 def make_plot(model_scores, human_scores, filename):
+    pp.clf()
     pp.plot(human_scores, model_scores, 'ko')
     pp.savefig(filename)
+
+def make_line_plot(model_scores, human_scores, filename):
+    pp.clf()
+    pp.plot(human_scores, model_scores)
+    pp.savefig(filename)
+
+
 
 
 #####################
@@ -246,7 +284,7 @@ class LinearEvalModel(object):
 
     input has shape (batch size x 3 x emb dimensionality)
     """
-    def __init__(self, input, emb_dim, batch_size, feat_dim=0, aux_features=None):
+    def __init__(self, input, emb_dim, batch_size, init_mean, init_range, feat_dim=0, aux_features=None):
         self.M = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.N = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.f = theano.shared(np.zeros((feat_dim,)).astype(theano.config.floatX), borrow=True)
@@ -268,17 +306,19 @@ class LinearEvalModel(object):
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
         #         Let's just try with a linear output first. We can always clip it to be within [0, 5] later.
         #self.output = 5 * T.clip(T.nnet.sigmoid(self.pred), 1e-7, 1 - 1e-7)
-        self.output = 2.5 + 500*self.pred #/ 2000.0 # *5/10000 = /2000, to re-scale dot product values to [0,5] range
+        self.output = 2.5 - init_mean + 5 * self.pred / init_range # to re-scale dot product values to [0,5] range
 
 
     def squared_error(self, score):
         return T.mean((self.output - score)**2)
 
+    def l2_regularization(self):
+        return self.M.norm(2) + self.N.norm(2)
 
 
 
-def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
-        batch_size=1, feat_dim=0, aux_features=None):
+def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100,
+        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, exp_name=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -293,10 +333,11 @@ def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
     y = T.fvector('y')
     feat = T.fvector('feat')
     
-    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, feat_dim=feat_dim, aux_features=feat)
+    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
+            feat_dim=feat_dim, aux_features=feat)
 
     # TODO: Try out L2 regularization
-    cost = model.squared_error(y)
+    cost = model.squared_error(y) + l2reg * model.l2_regularization()
         
     get_output = theano.function(
         inputs=[],
@@ -305,12 +346,12 @@ def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
             x: test_x
         }
     )
-    
-    get_pred = theano.function(
+
+    get_output_train = theano.function(
         inputs=[],
-        outputs=model.pred,
+        outputs=model.output,
         givens={
-            x: test_x
+            x: train_x
         }
     )
     
@@ -336,34 +377,53 @@ def train(train_x, test_x, train_y, test_y, learning_rate=0.01, num_epochs=100,
     first_output = get_output()
     best_output = np.zeros((50,)) 
     best_cor = [0,0]
+    loss_list = []
+    spearman_train = []
+    pearson_train = []
+    spearman_test = []
+    pearson_test = []
     best_correlation = -np.inf
     start_time = time.time()
     while (epoch < num_epochs):
         epoch += 1    
-        print 'Starting epoch',epoch
+        if epoch % 100 == 0:
+            print 'Starting epoch',epoch
         cost_list = []
         for minibatch_index in xrange(n_train_batches):
             minibatch_cost = train_model(minibatch_index)
             cost_list.append(minibatch_cost)
         model_out = get_output()
-        print sum(cost_list) / float(len(cost_list))
-        print 'Loss is ' + str(float(sum(cost_list))/len(cost_list))
-        
+        loss = sum(cost_list) / float(len(cost_list))
+        loss_list.append(loss)
+        #print 'Loss is ' + str(loss)
+        #train_correlation = correlation(get_output_train(), train_y)
         test_correlation = correlation(model_out, test_y)
-        print test_correlation
+        #spearman_train.append(train_correlation[0][0])
+        spearman_test.append(test_correlation[0][0])
+        #pearson_train.append(train_correlation[1][0])
+        pearson_test.append(test_correlation[1][0])
+        #print test_correlation
         if test_correlation[0][0] > best_correlation:
             best_correlation = test_correlation[0][0]
             best_cor = test_correlation
             best_output = get_output()
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
-
     end_time = time.time()
     print 'Finished training. Took %f s'%(end_time - start_time)
     print 'Final Spearman correlation: ', best_cor[0]
     print 'Final Peason correlation: ', best_cor[1]
-    make_plot(best_output, test_y, 'correlation_vhred_learned.png')
-    make_plot(first_output, test_y, 'correlation_vhred_first.png')
+    epoch_list = range(len(loss_list))
+    folder_name = exp_named + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
+    if not os.path.exists('./' + folder_name):
+        os.makedirs('./' + folder_name)
+    make_plot(best_output, test_y, './results/' + folder_name + '/learned.png')
+    make_plot(first_output, test_y, './results/' + folder_name + '/init.png')
+    make_line_plot(loss_list, epoch_list, './results/' + folder_name + '/loss.png')
+    #make_line_plot(spearman_train, epoch_list, './results/' + folder_name + '_spear_train.png')
+    make_line_plot(spearman_test, epoch_list, './results/' + folder_name + '/spear_test.png')
+    #make_line_plot(pearson_train, epoch_list, './results/' + folder_name + '_pear_train.png')
+    make_line_plot(pearson_test, epoch_list, './results/' + folder_name + '/pear_test.png')
     
 
 if __name__ == '__main__':
@@ -485,35 +545,40 @@ if __name__ == '__main__':
         twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
         twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
         twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
-
+    
+    
     # Reduce the dimensionality  of the embeddings with PCA
     # TODO: do PCA on all the embeddings, without separating context/ responses?
-    pca_components = 50
+    pca_list = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
+    l2reg_list = [0, 1e-6, 1e-4, 1e-2]
+    for l2reg in l2reg_list:
+        for pca_components in pca_list:
+            print '%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' + str(l2reg) + ' %%%%%%%%%%%%%%'
+            print 'Computing PCA...'
+            if pca_components < emb_dim:
+                twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
+           
+            init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
+            
+            # Reduce the dimensionality  of the embeddings with PCA
+            # Reduce the dimensionality  of the embeddings with PCA
+            # Calculate word-overlap metric scores on test set
+            train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
 
-    if pca_components < emb_dim:
-        pca = PCA(n_components = pca_components)
-        tw_embeddings_pca = np.zeros((len(twitter_context_embeddings), 3, pca_components))
-        for i in range(3):
-            tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
-        twitter_dialogue_embeddings = tw_embeddings_pca
-    
-    # Calculate word-overlap metric scores on test set
-    train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+            # Separate into training and test sets
+            train_index = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
+            train_x = twitter_dialogue_embeddings2[:train_index]
+            test_x = twitter_dialogue_embeddings2[train_index:]
+            train_y = np.array(twitter_human_scores[:train_index])
+            test_y = np.array(twitter_human_scores[train_index:])
+            
+            print 'Computing auxiliary features...'
+            aux_features = None
+            if use_aux_features:
+                aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
 
-    # Separate into training and test sets
-    train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
-    train_x = twitter_dialogue_embeddings[:train_index]
-    test_x = twitter_dialogue_embeddings[train_index:]
-    train_y = np.array(twitter_human_scores[:train_index])
-    test_y = np.array(twitter_human_scores[train_index:])
-    
-    print 'Computing auxiliary features...'
-    aux_features = None
-    if use_aux_features:
-        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
-
-    print 'Training model...'
-    train(train_x, test_x, train_y, test_y, aux_features=aux_features)
+            print 'Training model...'
+            train(train_x, test_x, train_y, test_y, init_mean, init_range, l2reg=l2reg, aux_features=aux_features, exp_name='pca'+str(pca_components))
 
 
     # Start training with:
