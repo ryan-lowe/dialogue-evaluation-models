@@ -414,9 +414,9 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     print 'Final Spearman correlation: ', best_cor[0]
     print 'Final Peason correlation: ', best_cor[1]
     epoch_list = range(len(loss_list))
-    folder_name = exp_named + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
-    if not os.path.exists('./' + folder_name):
-        os.makedirs('./' + folder_name)
+    folder_name = exp_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
+    if not os.path.exists('./results/' + folder_name):
+        os.makedirs('./results/' + folder_name)
     make_plot(best_output, test_y, './results/' + folder_name + '/learned.png')
     make_plot(first_output, test_y, './results/' + folder_name + '/init.png')
     make_line_plot(loss_list, epoch_list, './results/' + folder_name + '/loss.png')
@@ -556,7 +556,7 @@ if __name__ == '__main__':
             print '%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' + str(l2reg) + ' %%%%%%%%%%%%%%'
             print 'Computing PCA...'
             if pca_components < emb_dim:
-                twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
+                twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
            
             init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
             
