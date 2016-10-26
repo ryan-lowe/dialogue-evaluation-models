@@ -24,6 +24,7 @@ from sklearn.decomposition import PCA
 from pycocoevalcap.bleu.bleu import Bleu
 from pycocoevalcap.rouge.rouge import Rouge
 from pycocoevalcap.meteor.meteor import Meteor
+from random import randint
 
 from dialog_encdec import DialogEncoderDecoder
 from numpy_compat import argpartition
@@ -151,8 +152,8 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
     assert len(twitter_modelresponses) == len(twitter_gtresponses)
     assert len(twitter_modelresponses) == len(twitter_human_scores)
    
-    #test_index = 0
-    test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
+    test_index = 0 # If you want to evaluate on the whole dataset
+    #test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
     test_gtresponses = twitter_gtresponses[test_index:]
     test_modelresponses = twitter_modelresponses[test_index:]
     test_scores = twitter_human_scores[test_index:]
@@ -306,7 +307,7 @@ class LinearEvalModel(object):
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
         #         Let's just try with a linear output first. We can always clip it to be within [0, 5] later.
         #self.output = 5 * T.clip(T.nnet.sigmoid(self.pred), 1e-7, 1 - 1e-7)
-        self.output = 2.5 - init_mean + 5 * self.pred / init_range # to re-scale dot product values to [0,5] range
+        self.output = 2.5 + 5 * (self.pred - init_mean) / init_range # to re-scale dot product values to [0,5] range
 
 
     def squared_error(self, score):
@@ -317,13 +318,14 @@ class LinearEvalModel(object):
 
 
 
-def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100,
-        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, exp_name=None):
+def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=1, num_epochs=10000,
+        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
     emb_dim = int(train_x.shape[2])
     
+    train_y_values = train_y
     train_x = set_shared_variable(train_x)
     test_x = set_shared_variable(test_x)
     train_y = set_shared_variable(train_y)
@@ -393,14 +395,16 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             minibatch_cost = train_model(minibatch_index)
             cost_list.append(minibatch_cost)
         model_out = get_output()
+        model_train_out = get_output_train()
         loss = sum(cost_list) / float(len(cost_list))
         loss_list.append(loss)
         #print 'Loss is ' + str(loss)
-        #train_correlation = correlation(get_output_train(), train_y)
+
+        train_correlation = correlation(model_train_out, train_y_values)
         test_correlation = correlation(model_out, test_y)
-        #spearman_train.append(train_correlation[0][0])
+        spearman_train.append(train_correlation[0][0])
         spearman_test.append(test_correlation[0][0])
-        #pearson_train.append(train_correlation[1][0])
+        pearson_train.append(train_correlation[1][0])
         pearson_test.append(test_correlation[1][0])
         #print test_correlation
         if test_correlation[0][0] > best_correlation:
@@ -410,21 +414,37 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
     end_time = time.time()
-    print 'Finished training. Took %f s'%(end_time - start_time)
-    print 'Final Spearman correlation: ', best_cor[0]
-    print 'Final Peason correlation: ', best_cor[1]
-    epoch_list = range(len(loss_list))
-    folder_name = exp_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
-    if not os.path.exists('./results/' + folder_name):
-        os.makedirs('./results/' + folder_name)
-    make_plot(best_output, test_y, './results/' + folder_name + '/learned.png')
-    make_plot(first_output, test_y, './results/' + folder_name + '/init.png')
-    make_line_plot(loss_list, epoch_list, './results/' + folder_name + '/loss.png')
-    #make_line_plot(spearman_train, epoch_list, './results/' + folder_name + '_spear_train.png')
-    make_line_plot(spearman_test, epoch_list, './results/' + folder_name + '/spear_test.png')
-    #make_line_plot(pearson_train, epoch_list, './results/' + folder_name + '_pear_train.png')
-    make_line_plot(pearson_test, epoch_list, './results/' + folder_name + '/pear_test.png')
+    folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
+    print_string = '%%%% ' + folder_name + ' %%%%'
+    print_string += '\n Finished training. Took %f s'%(end_time - start_time)
+    print_string += '\n Best Spearman correlation: ' + str(best_cor[0])
+    print_string += '\n Best Peason correlation: ' + str(best_cor[1])
+    print_string += '\n Final Spearman correlation: (test) ' + str(test_correlation[0])
+    print_string += '\n Final Peason correlation (test): ' + str(test_correlation[1])
+    print_string +=  '\n Final Spearman correlation: (train) ' + str(train_correlation[0])
+    print_string +=  '\n Final Peason correlation (train): ' + str(train_correlation[1])
+    print print_string
+    if not os.path.exists('./results/' + exp_folder + folder_name):
+        os.makedirs('./results/' + exp_folder + folder_name)
     
+    # Make scatter plots
+    make_plot(best_output, test_y, './results/' + exp_folder + folder_name + '/best.png')
+    make_plot(first_output, test_y, './results/' + exp_folder + folder_name + '/init.png')
+    make_plot(model_out, test_y, './results/' + exp_folder + folder_name + 'final(test).png')
+    make_plot(model_train_out, train_y_values, './results/' + exp_folder + folder_name + 'final(train).png')
+    
+    # Make learning curves
+    epoch_list = range(len(loss_list))
+    make_line_plot(loss_list, epoch_list, './results/' + exp_folder + folder_name + '/loss.png')
+    make_line_plot(spearman_train, epoch_list, './results/' + exp_folder + folder_name + '/spear_train.png')
+    make_line_plot(spearman_test, epoch_list, './results/' + exp_folder + folder_name + '/spear_test.png')
+    make_line_plot(pearson_train, epoch_list, './results/' + exp_folder + folder_name + '/pear_train.png')
+    make_line_plot(pearson_test, epoch_list, './results/' + exp_folder + folder_name + '/pear_test.png')
+    
+    # Save summary info
+    with open('./results/' + exp_folder + folder_name + '/results.txt', 'w') as f1:
+        f1.write(print_string)
+    return '\n\n' + print_string
 
 if __name__ == '__main__':
     test_pct = 0.2
@@ -546,23 +566,36 @@ if __name__ == '__main__':
         twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
         twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
     
-    
-    # Reduce the dimensionality  of the embeddings with PCA
-    # TODO: do PCA on all the embeddings, without separating context/ responses?
+    if sys.argv[1] != None:
+        exp_name = sys.argv[1]
+    else:
+        exp_name = 'rand_exp_' + str(randint(0,99))
+    exp_folder = exp_name + '/'
+
+    # Main loop through hyperparameter search
+    separate_pca = True
+    total_summary = ''
     pca_list = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
     l2reg_list = [0, 1e-6, 1e-4, 1e-2]
+    pca_list = [1500, 1000, 500]
+    l2reg_list = [0,1e-8]
     for l2reg in l2reg_list:
         for pca_components in pca_list:
             print '%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' + str(l2reg) + ' %%%%%%%%%%%%%%'
+            # Reduce the dimensionality of the embeddings with PCA
             print 'Computing PCA...'
             if pca_components < emb_dim:
-                twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
-           
+                if separate_pca:
+                    twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
+                    pca_prefix = 'sep'
+                else: 
+                    twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
+                    pca_prefix = ''
+            else:
+                twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
+                pca_prefix = ''
             init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
             
-            # Reduce the dimensionality  of the embeddings with PCA
-            # Reduce the dimensionality  of the embeddings with PCA
-            # Calculate word-overlap metric scores on test set
             train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
 
             # Separate into training and test sets
@@ -578,8 +611,14 @@ if __name__ == '__main__':
                 aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
 
             print 'Training model...'
-            train(train_x, test_x, train_y, test_y, init_mean, init_range, l2reg=l2reg, aux_features=aux_features, exp_name='pca'+str(pca_components))
-
+            summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, l2reg=l2reg, aux_features=aux_features, \
+                    pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+            total_summary += summary
+#summary= train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, num_epochs=,
+#        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
+ 
+    with open('./results/summary_of_experiment_' + exp_name + '.txt', 'w') as f1:
+        f1.write(total_summary)
 
     # Start training with:
     #   THEANO_FLAGS=mode=FAST_COMPILE,floatX=float32 python eval_model_hred.py
