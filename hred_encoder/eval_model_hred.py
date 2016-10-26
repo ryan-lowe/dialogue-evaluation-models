@@ -318,7 +318,7 @@ class LinearEvalModel(object):
 
 
 
-def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=1, num_epochs=10000,
+def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=50, num_epochs=10000,
         batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
     
     print '...building model'

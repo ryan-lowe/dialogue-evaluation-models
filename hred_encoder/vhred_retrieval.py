@@ -69,6 +69,8 @@ def idxs_to_strs(data, bpe, idx_to_str):
         out.append(' '.join([idx_to_str[idx] for idx in row if idx in idx_to_str]).replace('@@ ',''))
     return out
 
+def flatten_list(l1):
+    return [i for sublist in l1 for i in sublist]
 
 # Compute model embeddings for contexts or responses 
 def compute_model_embeddings(data, model, ftype):
@@ -106,28 +108,71 @@ def compute_model_embeddings(data, model, ftype):
     return embeddings
 
 
+def scale_points(train_emb, test_emb, max_val):
+    '''
+    Scales all points in train_emb, test_emb such that
+    max_i ||x_i||_2 = max_val
+    max_val corresponds to U in the Auvolat et al. paper
+    '''
+    pass
+
+
+def transform_data_points(train_emb):
+    emb = []
+    pass
+
+def brute_force_search(train_emb, query_emb):
+    max_index = -1
+    largest_product = -1e9
+    for i in xrange(len(train_emb)):
+        prod = np.dot(train_emb[i], query_emb)
+        if prod > largest_product:
+            largest_product = prod
+            max_index = i
+    return max_index, largest_product
+
+def mat_vector_2norm(mat):
+    '''
+    Takes as input a matrix, and returns a vector correponding to the 2-norm
+    of each row vector.
+    '''
+    norm_list = []
+    for i in xrange(mat.shape[0]):
+        norm_list.append(np.sqrt(np.dot(mat[0], mat[0].T)))
+    return np.array(norm_list)
+
 
 def test_model(train_emb, test_emb, train_responses, test_responses, train_contexts, test_contexts, output_file):
     '''
-    Tests the model by looping through all test context embeddings, and finding the closest
-    context embedding in the training set. Then, outputs the corresponding response from
-    the training set
+    Tests the model by finding the closest context embedding in the training set
+    for each test query (using approximate MIPS). Then, outputs the corresponding response from
+    the training set.
+    Approximate MIPS is done using the spherical k-means method from Auvolat et al. (2016)    
     '''
-    # Build kdtree that is used for MIPS
-    kdtree = KDTree(zip(train_emb, test_emb))
+    
+    #train_emb, test_emb = scale_points(train_emb, test_emb, U)
+
+    #train_emb = transform_data_points(train_emb)
+    #test_emb = transform_query_vectors(test_emb)
+
+    test_ar = np.array(test_emb)
+    train_ar = np.array(train_emb)
+    prod_matrix = np.dot(train_ar, test_ar.T) # has shape (train_ex, test_ex)
+    prod_matrix = prod_matrix / mat_vector_2norm(test_ar) # divide by 2-norm of vectors to produce cosine sim
+    prod_matrix = (prod_matrix.T / mat_vector_2norm(train_ar) ).T
+    argmax_ar = np.argmax(prod_matrix, axis=0)
 
     model_responses = []
     closest_contexts = []
     highest_dotproduct = []
-    for emb in test_emb:
-        best_emb = tree.query(emb, k=1)
-        train_index = train_emb.index(best_emb)
+
+    for train_index, example in zip(list(argmax_ar), range(len(argmax_ar))):
         model_responses.append(train_responses[train_index])
         closest_contexts.append(train_contexts[train_index])
-        highest_dotproduct.append(np.dot(np.array(best_emb), np.array(emb)))
+        highest_dotproduct.append(prod_matrix[train_index][example])
 
     # Write data to output CSV
-    with open(outputfile, 'w') as out:
+    with open(output_file, 'w') as out:
         writer = csv.writer(out)
         writer.writerow(['Context', 'Score', 'Model Response', 'GT Response', 'Closest Context'])
         for i in xrange(len(model_responses)):
@@ -145,6 +190,10 @@ if __name__ == '__main__':
 
     twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
     twitter_data_prefix = '/home/ml/rlowe1/TwitterData/hred_retrieval_model/'
+    
+    max_trainemb_index = 759 # max = 759
+    max_testemb_index = 20 # max = 99
+    use_precomputed_embeddings = True
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
@@ -165,14 +214,11 @@ if __name__ == '__main__':
     train_contexts, train_responses = process_dialogues(train_data)
     test_contexts, test_responses = process_dialogues(test_data)
 
-    train_context_txt = idxs_to_strs(train_contexts, twitter_bpe, twitter_idx_to_str)
+    train_contexts_txt = idxs_to_strs(train_contexts, twitter_bpe, twitter_idx_to_str)
     train_responses_txt = idxs_to_strs(train_responses, twitter_bpe, twitter_idx_to_str)
-    test_context_txt = idxs_to_strs(test_contexts, twitter_bpe, twitter_idx_to_str)
+    test_contexts_txt = idxs_to_strs(test_contexts, twitter_bpe, twitter_idx_to_str)
     test_responses_txt = idxs_to_strs(test_responses, twitter_bpe, twitter_idx_to_str)
 
-
-    print train_context_txt[0:2]
-    print train_responses_txt[0:2]
 
     # Encode text into BPE format
     #twitter_context_ids = strs_to_idxs(twitter_contexts, twitter_bpe, twitter_str_to_idx)
@@ -180,7 +226,28 @@ if __name__ == '__main__':
     #twitter_modelresponses_ids = strs_to_idxs(twitter_modelresponses, twitter_bpe, twitter_str_to_idx)
 
     # Compute VHRED embeddings
-    if 'gpu' in theano.config.device.lower():
+    if use_precomputed_embeddings:
+        # Load embeddings from /home/ml/rlowe1/TwitterData/hred_retrieval_model
+        print 'Loading training context embeddings...'
+        train_emb = []
+        for i in xrange(1, max_trainemb_index + 1):
+            if i % 20 == 0:
+                path = twitter_data_prefix + 'train_context_emb' + str(i) + '.pkl'
+                with open(path, 'r') as f1:
+                    train_emb.append(cPickle.load(f1))
+
+        print 'Loading testing context embeddings...'
+        test_emb = []
+        for i in xrange(1, max_testemb_index + 1):
+            if i % 20 == 0:
+                path = twitter_data_prefix + 'test_context_emb' + str(i) + '.pkl'
+                with open(path, 'r') as f1:
+                    test_emb.append(cPickle.load(f1))
+        train_context_embeddings = flatten_list(train_emb)
+        test_context_embeddings = flatten_list(test_emb)
+
+
+    elif 'gpu' in theano.config.device.lower():
         state = prototype_state()
         state_path = twitter_model_prefix + "_state.pkl"
         model_path = twitter_model_prefix + "_model.npz"
@@ -193,46 +260,27 @@ if __name__ == '__main__':
 
         model = DialogEncoderDecoder(state) 
         
-        if load_embeddings == True:
-            train_emb_data_file = twitter_data_prefix + 'train_context_emb'
-            test_emb_data_file = twitter_data_prefix + 'test_context_emb'
-            train_embfile_num = 2
-            test_embfile_num = 2
-            
-            print 'Loading training context embeddings...'
-            train_emb = []
-            for i in xrange(train_embfile_num):
-                train_emb.append(cPickle.load(train_emb_data_file))
-            
-            print 'Loading testing context embeddings...'
-            test_emb = []
-            for i in xrange(test_embfile_num):
-                    test_emb.append(cPickle.load(test_emb_data_file))
+        print 'Computing training context embeddings...'
+        train_context_embeddings = compute_model_embeddings(train_contexts, model, 'train')
+        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
 
-        else:
-            print 'Computing training context embeddings...'
-            train_context_embeddings = compute_model_embeddings(train_contexts, model, 'train')
-            #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
-
-            print 'Computing test context embeddings...'
-            test_context_embeddings = compute_model_embeddings(test_contexts, model, 'test')
-            #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
+        print 'Computing test context embeddings...'
+        test_context_embeddings = compute_model_embeddings(test_contexts, model, 'test')
+        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
 
         
         #assert len(train_context_embeddings) == len(test_context_embeddings)
-
-        emb_dim = train_context_embeddings[0].shape[0]
-
-        twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-        for i in range(len(twitter_context_embeddings)):
-            twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
-            twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
-            twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
 
     else:
         # Set embeddings to 0 for now. alternatively, we can load them from disc...
         #embeddings = cPickle.load(open(embedding_file, 'rb'))
         print 'ERROR: No GPU specified!'
     
+    start = time.time() 
     print 'Testing model...'
     test_model(train_context_embeddings, test_context_embeddings, train_responses_txt, test_responses_txt, train_contexts_txt, test_contexts_txt, output_file)
+    print 'Took %f seconds'%(time.time() - start)
+
+
+###############
+
