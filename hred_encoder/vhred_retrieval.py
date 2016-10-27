@@ -73,8 +73,10 @@ def flatten_list(l1):
     return [i for sublist in l1 for i in sublist]
 
 # Compute model embeddings for contexts or responses 
-def compute_model_embeddings(data, model, ftype):
+# Embedding type can be 'CONTEXT' or 'DECODER'
+def compute_model_embeddings(data, model, embedding_type, ftype):
     model_compute_encoding = model.build_encoder_function()
+    model_compute_decoder_encoding = model.build_decoder_encoding()
 
     embeddings = []
     context_ids_batch = []
@@ -85,13 +87,12 @@ def compute_model_embeddings(data, model, ftype):
     start = time.time()
     for context_ids in data:
         context_ids_batch.append(context_ids)
-
-        if len(context_ids_batch) == model.bs:
-            counter += 1
-            batch_index = batch_index + 1
+        counter += 1
+        if len(context_ids_batch) == model.bs or counter ==  len(data):
+            batch_index += 1
 
             print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total),
-            encs = compute_encodings(context_ids_batch, model, model_compute_encoding)
+            encs = compute_encodings(context_ids_batch, model, model_compute_encoding, model_compute_decoder_encoding, embedding_type)
             for i in range(len(encs)):
                 embeddings.append(encs[i])
 
@@ -99,10 +100,12 @@ def compute_model_embeddings(data, model, ftype):
             print time.time() - start
             start = time.time()
 
-        if counter % 1000 == 0 or counter == len(data):
+        if batch_index % 1000 == 0 or counter == len(data):
             fcounter += 1
-
-            cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
+            if embedding_type == 'CONTEXT':
+                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
+            elif embedding_type == 'DECODER':
+                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_decoder_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
             embeddings = []
 
     return embeddings
@@ -193,7 +196,8 @@ if __name__ == '__main__':
     
     max_trainemb_index = 759 # max = 759
     max_testemb_index = 20 # max = 99
-    use_precomputed_embeddings = True
+    use_precomputed_embeddings = False
+    embedding_type = 'CONTEXT' #'CONTEXT'
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
@@ -261,11 +265,11 @@ if __name__ == '__main__':
         model = DialogEncoderDecoder(state) 
         
         print 'Computing training context embeddings...'
-        train_context_embeddings = compute_model_embeddings(train_contexts, model, 'train')
+        train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train')
         #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
 
         print 'Computing test context embeddings...'
-        test_context_embeddings = compute_model_embeddings(test_contexts, model, 'test')
+        test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test')
         #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
 
         
