@@ -205,8 +205,10 @@ def compute_pca(pca_components, twitter_dialogue_embeddings):
 
 
 # Compute model embeddings for contexts or responses 
-def compute_model_embeddings(data, model):
+# Embedding type can be 'CONTEXT' or 'DECODER"
+def compute_model_embeddings(data, model, embedding_type):
     model_compute_encoding = model.build_encoder_function()
+    model_compute_decoder_encoding = model.build_decoder_encoding()
 
     embeddings = []
     context_ids_batch = []
@@ -221,7 +223,7 @@ def compute_model_embeddings(data, model):
             batch_index += 1
 
             print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total)
-            encs = compute_encodings(context_ids_batch, model, model_compute_encoding)
+            encs = compute_encodings(context_ids_batch, model, model_compute_encoding, model_compute_decoder_encoding, embedding_type)
             for i in range(len(encs)):
                 embeddings.append(encs[i])
 
@@ -450,7 +452,7 @@ if __name__ == '__main__':
     test_pct = 0.2
     pca_components = 200
     use_aux_features = False
-    use_precomputed_embeddings = True
+    use_precomputed_embeddings = False
     eval_overlap_metrics = False
 
     print 'Loading data...'
@@ -461,7 +463,9 @@ if __name__ == '__main__':
                                             # dict represents a single context (c_id is the key for looking up contexts in context.pkl
     twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
     twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
-    
+
+    embedding_type = 'CONTEXT' # Can be "CONTEXT" or "DECODER"    
+
     context_embedding_file = './context_emb.pkl'
     modelresponses_embedding_file = './modelresponses_emb.pkl'
     gtresponses_embedding_file = './gtresponses_emb.pkl'
@@ -469,7 +473,8 @@ if __name__ == '__main__':
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
 
-    twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
+    #twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
+    twitter_model_prefix = '../TwitterModel/1470516214.08_TwitterModel__405001'
     # previously: '../TwitterModel/1470516214.08_TwitterModel__405001'
     # changed due to disk space limitations on Ryan's machine
     
@@ -526,15 +531,15 @@ if __name__ == '__main__':
         model = DialogEncoderDecoder(state) 
         
         print 'Computing context embeddings...'
-        twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model)
+        twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model, embedding_type)
         with open(context_embedding_file, 'w') as f1:
             cPickle.dump(twitter_context_embeddings, f1)
         print 'Computing ground truth response embeddings...'
-        twitter_gtresponses_embeddings = compute_model_embeddings(twitter_gtresponses_ids, model)
+        twitter_gtresponses_embeddings = compute_model_embeddings(twitter_gtresponses_ids, model, embedding_type)
         with open(gtresponses_embedding_file, 'w') as f1:
             cPickle.dump(twitter_gtresponses_embeddings, f1)
         print 'Computing model response embeddings...'
-        twitter_modelresponses_embeddings = compute_model_embeddings(twitter_modelresponses_ids, model)
+        twitter_modelresponses_embeddings = compute_model_embeddings(twitter_modelresponses_ids, model, embedding_type)
         with open(modelresponses_embedding_file, 'w') as f1:
             cPickle.dump(twitter_modelresponses_embeddings, f1)
     
@@ -543,7 +548,9 @@ if __name__ == '__main__':
         #embeddings = cPickle.load(open(embedding_file, 'rb'))
         print 'ERROR: No GPU specified!'
         print ' To save testing time, model will be trained with zero context / response embeddings...'
-        twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+        twitter_context_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+        twitter_gtresponses_embedding = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+        twitter_modelresponses_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
     
 
     # Copy the contexts and gt responses 4 times (to align with the model responses)
@@ -566,7 +573,7 @@ if __name__ == '__main__':
         twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
         twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
     
-    if sys.argv[1] != None:
+    if len(sys.argv) > 0 and sys.argv[1] != None:
         exp_name = sys.argv[1]
     else:
         exp_name = 'rand_exp_' + str(randint(0,99))
