@@ -62,6 +62,29 @@ def strs_to_idxs(data, bpe, str_to_idx):
     return out
 
 
+# Computes PCA decomposition for the context, gt responses, and model responses separately
+def compute_separate_pca(pca_components, twitter_dialogue_embeddings):
+    pca = PCA(n_components = pca_components)
+    tw_embeddings_pca = np.zeros((twitter_dialogue_embeddings.shape[0], 3, pca_components))
+    for i in range(3):
+        tw_embeddings_pca[:,i] = pca.fit_transform(twitter_dialogue_embeddings[:, i])
+    return tw_embeddings_pca
+
+# Computes PCA decomposition for the context, gt responses, and model responses together
+def compute_pca(pca_components, twitter_dialogue_embeddings):
+    pca = PCA(n_components = pca_components)
+    num_ex = twitter_dialogue_embeddings.shape[0]
+    dim = twitter_dialogue_embeddings.shape[2]
+    tw_embeddings_pca = np.zeros((num_ex * 3, dim))
+    for i in range(3):
+        tw_embeddings_pca[num_ex*i: num_ex*(i+1),:] = twitter_dialogue_embeddings[:,i]
+    tw_embeddings_pca = pca.fit_transform(tw_embeddings_pca)
+    tw_emb = np.zeros((num_ex, 3, pca_components))
+    for i in range(3):
+        tw_emb[:,i] = tw_embeddings_pca[num_ex*i: num_ex*(i+1),:]
+    return tw_emb
+
+
 def idxs_to_strs(data, bpe, idx_to_str):
     ''' Converts from BPE form to strings '''
     out = []
@@ -106,6 +129,8 @@ def compute_model_embeddings(data, model, embedding_type, ftype):
                 cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
             elif embedding_type == 'DECODER':
                 cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_decoder_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
+            else:
+                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_emb_other/'+ftype+'_context_emb_'+str(fcounter)+'.pkl', 'w'))            
             embeddings = []
 
     return embeddings
@@ -192,12 +217,12 @@ if __name__ == '__main__':
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
 
     twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
-    twitter_data_prefix = '/home/ml/rlowe1/TwitterData/hred_retrieval_model/'
+    twitter_data_prefix = '/home/ml/rlowe1/TwitterData/vhred_context_emb_old/'
     
-    max_trainemb_index = 759 # max = 759
+    max_trainemb_index = 20 # max = 759
     max_testemb_index = 20 # max = 99
     use_precomputed_embeddings = False
-    embedding_type = 'CONTEXT' #'CONTEXT'
+    embedding_type = 'DECODER' #'CONTEXT'
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
@@ -231,7 +256,7 @@ if __name__ == '__main__':
 
     # Compute VHRED embeddings
     if use_precomputed_embeddings:
-        # Load embeddings from /home/ml/rlowe1/TwitterData/hred_retrieval_model
+        # Load embeddings from /home/ml/rlowe1/TwitterData/vhred_context_emb_old
         print 'Loading training context embeddings...'
         train_emb = []
         for i in xrange(1, max_trainemb_index + 1):
@@ -266,11 +291,11 @@ if __name__ == '__main__':
         
         print 'Computing training context embeddings...'
         train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train')
-        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/train_context_emb.pkl', 'w'))
+        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb_old/train_context_emb.pkl', 'w'))
 
         print 'Computing test context embeddings...'
         test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test')
-        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/hred_retrieval_model/test_context_emb.pkl', 'w'))
+        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb_old/test_context_emb.pkl', 'w'))
 
         
         #assert len(train_context_embeddings) == len(test_context_embeddings)
@@ -279,7 +304,23 @@ if __name__ == '__main__':
         # Set embeddings to 0 for now. alternatively, we can load them from disc...
         #embeddings = cPickle.load(open(embedding_file, 'rb'))
         print 'ERROR: No GPU specified!'
+    '''
+    pca_components = 50
+    print 'Computing PCA...'
+    if pca_components < emb_dim:
+        if separate_pca:
+            twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
+            pca_prefix = 'sep'
+        else:
+            twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
+            pca_prefix = ''
+    else:
+        twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
+        pca_prefix = ''
+
     
+    cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/context_emb_pca30/'+ftype+'_context_emb_'+str(fcounter)+'.pkl', 'w'))            
+    '''
     start = time.time() 
     print 'Testing model...'
     test_model(train_context_embeddings, test_context_embeddings, train_responses_txt, test_responses_txt, train_contexts_txt, test_contexts_txt, output_file)

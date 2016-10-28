@@ -205,11 +205,14 @@ def compute_pca(pca_components, twitter_dialogue_embeddings):
 
 
 # Compute model embeddings for contexts or responses 
-# Embedding type can be 'CONTEXT' or 'DECODER"
+# Embedding type can be 'CONTEXT' or 'DECODER'
+# NOTE: vhred_retrieval.py has code for saving the embeddings
+# from the whole Twitter dataset into .pkl files
 def compute_model_embeddings(data, model, embedding_type):
     model_compute_encoding = model.build_encoder_function()
     model_compute_decoder_encoding = model.build_decoder_encoding()
-
+    model.bs = 20
+    print model.bs
     embeddings = []
     context_ids_batch = []
     batch_index = 0
@@ -219,9 +222,10 @@ def compute_model_embeddings(data, model, embedding_type):
         counter += 1
         context_ids_batch.append(context_ids)
 
-        if len(context_ids_batch) == model.bs or counter == len(data):
+        if len(context_ids_batch) == model.bs:# or counter == len(data):
             batch_index += 1
-
+            #if counter == len(data):
+            #    model.bs = counter % model.bs
             print '     Computing embeddings for batch ' + str(batch_index) + ' / ' + str(batch_total)
             encs = compute_encodings(context_ids_batch, model, model_compute_encoding, model_compute_decoder_encoding, embedding_type)
             for i in range(len(encs)):
@@ -320,7 +324,7 @@ class LinearEvalModel(object):
 
 
 
-def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=50, num_epochs=10000,
+def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100,
         batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
     
     print '...building model'
@@ -340,7 +344,6 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
             feat_dim=feat_dim, aux_features=feat)
 
-    # TODO: Try out L2 regularization
     cost = model.squared_error(y) + l2reg * model.l2_regularization()
         
     get_output = theano.function(
@@ -400,7 +403,6 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
         model_train_out = get_output_train()
         loss = sum(cost_list) / float(len(cost_list))
         loss_list.append(loss)
-        #print 'Loss is ' + str(loss)
 
         train_correlation = correlation(model_train_out, train_y_values)
         test_correlation = correlation(model_out, test_y)
@@ -408,13 +410,14 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
         spearman_test.append(test_correlation[0][0])
         pearson_train.append(train_correlation[1][0])
         pearson_test.append(test_correlation[1][0])
-        #print test_correlation
+        
         if test_correlation[0][0] > best_correlation:
             best_correlation = test_correlation[0][0]
             best_cor = test_correlation
             best_output = get_output()
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
+    
     end_time = time.time()
     folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
     print_string = '%%%% ' + folder_name + ' %%%%'
@@ -432,8 +435,8 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     # Make scatter plots
     make_plot(best_output, test_y, './results/' + exp_folder + folder_name + '/best.png')
     make_plot(first_output, test_y, './results/' + exp_folder + folder_name + '/init.png')
-    make_plot(model_out, test_y, './results/' + exp_folder + folder_name + 'final(test).png')
-    make_plot(model_train_out, train_y_values, './results/' + exp_folder + folder_name + 'final(train).png')
+    make_plot(model_out, test_y, './results/' + exp_folder + folder_name + '/final(test).png')
+    make_plot(model_train_out, train_y_values, './results/' + exp_folder + folder_name + '/final(train).png')
     
     # Make learning curves
     epoch_list = range(len(loss_list))
@@ -463,18 +466,29 @@ if __name__ == '__main__':
                                             # dict represents a single context (c_id is the key for looking up contexts in context.pkl
     twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
     twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
+    
+    if len(sys.argv) > 0 and sys.argv[2] != None:
+        embedding_type = sys.argv[2]
+    #embedding_type = 'CONTEXT' # Can be "CONTEXT" or "DECODER"   
+    print 'Embedding type is ' + embedding_type
+    
+    if embedding_type == 'CONTEXT':
+        context_embedding_file = './context_emb_vhredcontext.pkl'
+        modelresponses_embedding_file = './modelresponses_emb_vhredcontext.pkl'
+        gtresponses_embedding_file = './gtresponses_emb_vhredcontext.pkl'
+    elif embedding_type == 'DECODER':
+        context_embedding_file = './context_emb_vhreddecoder.pkl'
+        modelresponses_embedding_file = './modelresponses_emb_vhreddecoder.pkl'
+        gtresponses_embedding_file = './gtresponses_emb_vhreddecoder.pkl'
+    
+    print context_embedding_file
 
-    embedding_type = 'CONTEXT' # Can be "CONTEXT" or "DECODER"    
-
-    context_embedding_file = './context_emb.pkl'
-    modelresponses_embedding_file = './modelresponses_emb.pkl'
-    gtresponses_embedding_file = './gtresponses_emb.pkl'
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
 
-    #twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
-    twitter_model_prefix = '../TwitterModel/1470516214.08_TwitterModel__405001'
+    twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
+    #twitter_model_prefix = '../TwitterModel/1470516214.08_TwitterModel__405001'
     # previously: '../TwitterModel/1470516214.08_TwitterModel__405001'
     # changed due to disk space limitations on Ryan's machine
     
@@ -584,45 +598,51 @@ if __name__ == '__main__':
     total_summary = ''
     pca_list = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
     l2reg_list = [0, 1e-6, 1e-4, 1e-2]
-    pca_list = [1500, 1000, 500]
-    l2reg_list = [0,1e-8]
-    for l2reg in l2reg_list:
-        for pca_components in pca_list:
-            print '%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' + str(l2reg) + ' %%%%%%%%%%%%%%'
-            # Reduce the dimensionality of the embeddings with PCA
-            print 'Computing PCA...'
-            if pca_components < emb_dim:
-                if separate_pca:
-                    twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
-                    pca_prefix = 'sep'
-                else: 
-                    twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
-                    pca_prefix = ''
-            else:
-                twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
-                pca_prefix = ''
-            init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
-            
-            train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
+    pca_list = [10, 20, 50, 100, 1000]
+    l2reg_list = [1e-3, 1e-2, 0.1]
+    lr_list = [0.01]
+    last_pca = 0
+    for pca_components in pca_list:
+        for lr in lr_list:
+            for l2reg in l2reg_list:
+                print '\n%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' \
+                        + str(l2reg) + ', lr=' + str(lr) + ' %%%%%%%%%%%%%%'
+                # Reduce the dimensionality of the embeddings with PCA
+                if pca_components == last_pca:
+                    print 'Using embeddings from last round...'                    
+                else:
+                    print 'Computing PCA...'
+                    if pca_components < emb_dim:
+                        if separate_pca:
+                            twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
+                            pca_prefix = 'sep'
+                        else: 
+                            twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
+                            pca_prefix = ''
+                    else:
+                        twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
+                        pca_prefix = ''
+                init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
+                
+                train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
 
-            # Separate into training and test sets
-            train_index = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
-            train_x = twitter_dialogue_embeddings2[:train_index]
-            test_x = twitter_dialogue_embeddings2[train_index:]
-            train_y = np.array(twitter_human_scores[:train_index])
-            test_y = np.array(twitter_human_scores[train_index:])
-            
-            print 'Computing auxiliary features...'
-            aux_features = None
-            if use_aux_features:
-                aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
+                # Separate into training and test sets
+                train_index = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
+                train_x = twitter_dialogue_embeddings2[:train_index]
+                test_x = twitter_dialogue_embeddings2[train_index:]
+                train_y = np.array(twitter_human_scores[:train_index])
+                test_y = np.array(twitter_human_scores[train_index:])
+                
+                print 'Computing auxiliary features...'
+                aux_features = None
+                if use_aux_features:
+                    aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
 
-            print 'Training model...'
-            summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, l2reg=l2reg, aux_features=aux_features, \
-                    pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
-            total_summary += summary
-#summary= train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, num_epochs=,
-#        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
+                print 'Training model...'
+                summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, aux_features=aux_features, \
+                        pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+                total_summary += summary
+                last_pca = pca_components
  
     with open('./results/summary_of_experiment_' + exp_name + '.txt', 'w') as f1:
         f1.write(total_summary)
