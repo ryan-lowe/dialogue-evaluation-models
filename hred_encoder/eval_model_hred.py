@@ -190,18 +190,29 @@ def compute_separate_pca(pca_components, twitter_dialogue_embeddings):
     return tw_embeddings_pca
 
 # Computes PCA decomposition for the context, gt responses, and model responses together
-def compute_pca(pca_components, twitter_dialogue_embeddings):
+# NOTE: this computes the PCA on the training embeddings, and then applies them to the
+# test embeddings (it does not compute PCA on the testing embeddings)
+def compute_pca(pca_components, twitter_dialogue_embeddings, train_index):
     pca = PCA(n_components = pca_components)
-    num_ex = twitter_dialogue_embeddings.shape[0]
+    tw_nonpca_train = twitter_dialogue_embeddings[:train_index]
+    tw_nonpca_test = twitter_dialogue_embeddings[train_index:]
+
+    num_ex_train = tw_nonpca_train.shape[0]
+    num_ex_test = tw_nonpca_test.shape[0]
     dim = twitter_dialogue_embeddings.shape[2]
-    tw_embeddings_pca = np.zeros((num_ex * 3, dim))
+    tw_embeddings_pca_train = np.zeros((num_ex_train * 3, dim))
+    tw_embeddings_pca_test = np.zeros((num_ex_test * 3, dim))
     for i in range(3):
-        tw_embeddings_pca[num_ex*i: num_ex*(i+1),:] = twitter_dialogue_embeddings[:,i]
-    tw_embeddings_pca = pca.fit_transform(tw_embeddings_pca)
-    tw_emb = np.zeros((num_ex, 3, pca_components))
+        tw_embeddings_pca_train[num_ex_train*i: num_ex_train*(i+1),:] = tw_nonpca_train[:,i]
+        tw_embeddings_pca_test[num_ex_test*i: num_ex_test*(i+1),:] = tw_nonpca_test[:,i]
+    tw_embeddings_pca_train = pca.fit_transform(tw_embeddings_pca_train)
+    tw_embeddings_pca_test = pca.transform(tw_embeddings_pca_test)
+    tw_emb_train = np.zeros((num_ex_train, 3, pca_components))
+    tw_emb_test = np.zeros((num_ex_test, 3, pca_components))
     for i in range(3):
-        tw_emb[:,i] = tw_embeddings_pca[num_ex*i: num_ex*(i+1),:]
-    return tw_emb
+        tw_emb_train[:,i] = tw_embeddings_pca_train[num_ex_train*i: num_ex_train*(i+1),:]
+        tw_emb_test[:,i] = tw_embeddings_pca_test[num_ex_test*i: num_ex_test*(i+1),:]
+    return tw_emb_train, tw_emb_test
 
 
 # Compute model embeddings for contexts or responses 
@@ -321,11 +332,13 @@ class LinearEvalModel(object):
 
     def l2_regularization(self):
         return self.M.norm(2) + self.N.norm(2)
-
+    
+    def l1_regularization(self):
+        return self.M.norm(1) + self.N.norm(1)
 
 
 def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100,
-        batch_size=16, l2reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
+        batch_size=16, l2reg=0, l1reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -344,7 +357,7 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
             feat_dim=feat_dim, aux_features=feat)
 
-    cost = model.squared_error(y) + l2reg * model.l2_regularization()
+    cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
         
     get_output = theano.function(
         inputs=[],
@@ -419,7 +432,8 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             #    cPickle.dump(model, f)
     
     end_time = time.time()
-    folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
+    folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l1=' + \
+            str(l1reg) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
     print_string = '%%%% ' + folder_name + ' %%%%'
     print_string += '\n Finished training. Took %f s'%(end_time - start_time)
     print_string += '\n Best Spearman correlation: ' + str(best_cor[0])
@@ -455,7 +469,7 @@ if __name__ == '__main__':
     test_pct = 0.2
     pca_components = 200
     use_aux_features = False
-    use_precomputed_embeddings = False
+    use_precomputed_embeddings = True
     eval_overlap_metrics = False
 
     print 'Loading data...'
@@ -594,56 +608,61 @@ if __name__ == '__main__':
     exp_folder = exp_name + '/'
 
     # Main loop through hyperparameter search
-    separate_pca = True
+    separate_pca = False
     total_summary = ''
     pca_list = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
     l2reg_list = [0, 1e-6, 1e-4, 1e-2]
-    pca_list = [10, 20, 50, 100, 1000]
-    l2reg_list = [1e-3, 1e-2, 0.1]
+    pca_list = [5, 7, 10, 15, 20, 35, 50, 100]
+    l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
+    l2reg_list = [0]
     lr_list = [0.01]
     last_pca = 0
     for pca_components in pca_list:
         for lr in lr_list:
             for l2reg in l2reg_list:
-                print '\n%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' \
-                        + str(l2reg) + ', lr=' + str(lr) + ' %%%%%%%%%%%%%%'
-                # Reduce the dimensionality of the embeddings with PCA
-                if pca_components == last_pca:
-                    print 'Using embeddings from last round...'                    
-                else:
-                    print 'Computing PCA...'
-                    if pca_components < emb_dim:
-                        if separate_pca:
-                            twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
-                            pca_prefix = 'sep'
-                        else: 
-                            twitter_dialogue_embeddings2 = compute_pca(pca_components, twitter_dialogue_embeddings)
-                            pca_prefix = ''
+                for l1reg in l1reg_list:
+                    print '\n%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' \
+                            + str(l2reg) + ', l1reg=' + str(l1reg) + ' %%%%%%%%%%%%%%'
+                    if separate_pca == False:
+                        print 'Also, combined PCA with ' + embedding_type + ' embeddings'
+                    # Reduce the dimensionality of the embeddings with PCA
+                    train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+                    
+                    if pca_components == last_pca:
+                        print 'Using embeddings from last round...'                    
                     else:
-                        twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
-                        pca_prefix = ''
-                init_mean, init_range = compute_init_values(twitter_dialogue_embeddings2)
-                
-                train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
+                        print 'Computing PCA...'
+                        if pca_components < emb_dim:
+                            if separate_pca:
+                                twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
+                                train_x = twitter_dialogue_embeddings2[:train_index]
+                                test_x = twitter_dialogue_embeddings2[train_index:]
+                                pca_prefix = 'sep'
+                            else: 
+                                train_x, test_x = compute_pca(pca_components, twitter_dialogue_embeddings, train_index)
+                                pca_prefix = ''
+                        else:
+                            twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
+                            pca_prefix = ''
+                    init_mean, init_range = compute_init_values(train_x)
+                    
+                    # train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
 
-                # Separate into training and test sets
-                train_index = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
-                train_x = twitter_dialogue_embeddings2[:train_index]
-                test_x = twitter_dialogue_embeddings2[train_index:]
-                train_y = np.array(twitter_human_scores[:train_index])
-                test_y = np.array(twitter_human_scores[train_index:])
-                
-                print 'Computing auxiliary features...'
-                aux_features = None
-                if use_aux_features:
-                    aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
+                    # Separate into training and test sets
+                    train_y = np.array(twitter_human_scores[:train_index])
+                    test_y = np.array(twitter_human_scores[train_index:])
+                    
+                    print 'Computing auxiliary features...'
+                    aux_features = None
+                    if use_aux_features:
+                        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
 
-                print 'Training model...'
-                summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, aux_features=aux_features, \
-                        pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
-                total_summary += summary
-                last_pca = pca_components
- 
+                    print 'Training model...'
+                    summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, aux_features=aux_features, \
+                            pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+                    total_summary += summary
+                    last_pca = pca_components
+     
     with open('./results/summary_of_experiment_' + exp_name + '.txt', 'w') as f1:
         f1.write(total_summary)
 

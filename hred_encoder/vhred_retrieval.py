@@ -11,6 +11,7 @@ import theano.tensor as T
 import time
 import math
 import cPickle
+import argparse
 
 from scipy.spatial import KDTree
 
@@ -97,7 +98,7 @@ def flatten_list(l1):
 
 # Compute model embeddings for contexts or responses 
 # Embedding type can be 'CONTEXT' or 'DECODER'
-def compute_model_embeddings(data, model, embedding_type, ftype):
+def compute_model_embeddings(data, model, embedding_type, ftype, max_batches=np.infty):
     model_compute_encoding = model.build_encoder_function()
     model_compute_decoder_encoding = model.build_decoder_encoding()
 
@@ -108,6 +109,11 @@ def compute_model_embeddings(data, model, embedding_type, ftype):
     counter = 0
     fcounter = 0
     start = time.time()
+    # TODO: remove temporary code
+    batch_index = int(max_batches / 2.0)
+    data = data[int(len(data)/2.0):]
+    fcounter = int(max_batches / 1000.0 / 2.0) + 2
+    ###
     for context_ids in data:
         context_ids_batch.append(context_ids)
         counter += 1
@@ -123,15 +129,18 @@ def compute_model_embeddings(data, model, embedding_type, ftype):
             print time.time() - start
             start = time.time()
 
-        if batch_index % 1000 == 0 or counter == len(data):
-            fcounter += 1
-            if embedding_type == 'CONTEXT':
-                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
-            elif embedding_type == 'DECODER':
-                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_decoder_emb/'+ftype+'_context_emb'+str(fcounter)+'.pkl', 'w'))
-            else:
-                cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_emb_other/'+ftype+'_context_emb_'+str(fcounter)+'.pkl', 'w'))            
-            embeddings = []
+            if batch_index % 1000 == 0 or counter == len(data):
+                fcounter += 1
+                if embedding_type == 'CONTEXT':
+                    cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb/'+ftype+'_emb'+str(fcounter)+'.pkl', 'w'))
+                elif embedding_type == 'DECODER':
+                    cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_decoder_emb/'+ftype+'_emb'+str(fcounter)+'.pkl', 'w'))
+                else:
+                    cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_emb_other/'+ftype+'_emb_'+str(fcounter)+'.pkl', 'w'))            
+                embeddings = []
+
+                if batch_index >= max_batches / 2.0:
+                    return embeddings
 
     return embeddings
 
@@ -169,6 +178,27 @@ def mat_vector_2norm(mat):
         norm_list.append(np.sqrt(np.dot(mat[0], mat[0].T)))
     return np.array(norm_list)
 
+def sanity_check(test_emb, train_emb, num_test):
+    '''
+    Sanity check on the cosine similarity calculations
+    Finds the closest vector in the space by brute force
+    '''
+    correct_list = []
+    for i in xrange(num_test):
+        smallest_norm = np.infty
+        index = 0
+        for j in xrange(len(train_emb)):
+            norm = np.linalg.norm(emb - test_emb[i])
+            if norm < smallest_norm:
+                smallest_norm = norm
+                index = j
+        correct_list.append(index)
+    # Pad the list to make it the same length as test_emb
+    for i in xrange(len(test_emb) - num_test):
+        correct_list.append(-1)
+    return correct_list
+
+
 
 def test_model(train_emb, test_emb, train_responses, test_responses, train_contexts, test_contexts, output_file):
     '''
@@ -176,13 +206,11 @@ def test_model(train_emb, test_emb, train_responses, test_responses, train_conte
     for each test query (using approximate MIPS). Then, outputs the corresponding response from
     the training set.
     Approximate MIPS is done using the spherical k-means method from Auvolat et al. (2016)    
+    NOTE: Right now this just does a numpy array multiplication. No approximate MIPS is used.
     '''
-    
-    #train_emb, test_emb = scale_points(train_emb, test_emb, U)
-
-    #train_emb = transform_data_points(train_emb)
-    #test_emb = transform_query_vectors(test_emb)
-
+    # Compute the cosine similarity between each test embedding and each embedding in the test set
+    # This is done by taking the product of the test and train embedding matrices, and dividing
+    # by the 2-norms of the vectors
     test_ar = np.array(test_emb)
     train_ar = np.array(train_emb)
     prod_matrix = np.dot(train_ar, test_ar.T) # has shape (train_ex, test_ex)
@@ -212,6 +240,11 @@ def test_model(train_emb, test_emb, train_responses, test_responses, train_conte
 
 
 if __name__ == '__main__':
+    #parser = argparse.ArgumentParser()
+    #parser.register('type','bool',str2bool)
+    #parser.add_argument('--use_precomputed_embeddings', type='bool', default=True, help='Load precomputed embeddings. If False, will re-generate and save embeddings')
+    #parser.add_argument('--
+
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
@@ -222,7 +255,7 @@ if __name__ == '__main__':
     max_trainemb_index = 20 # max = 759
     max_testemb_index = 20 # max = 99
     use_precomputed_embeddings = False
-    embedding_type = 'DECODER' #'CONTEXT'
+    embedding_type = 'CONTEXT' # Can be 'DECODER' or 'CONTEXT'
 
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
@@ -289,13 +322,23 @@ if __name__ == '__main__':
 
         model = DialogEncoderDecoder(state) 
         
-        print 'Computing training context embeddings...'
-        train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train')
-        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb_old/train_context_emb.pkl', 'w'))
+        calc_response_embeddings = False
+        calc_context_embeddings = True
 
-        print 'Computing test context embeddings...'
-        test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test')
-        #cPickle.dump(twitter_context_embeddings, open('/home/ml/rlowe1/TwitterData/vhred_context_emb_old/test_context_emb.pkl', 'w'))
+        if calc_response_embeddings == True:
+            print 'Computing training response embeddings...'
+            train_response_embeddings = compute_model_embeddings(train_responses, model, embedding_type, 'train_response', max_batches=8000)
+
+            print 'Computing test response embeddings...'
+            test_response_embeddings = compute_model_embeddings(test_responses, model, embedding_type, 'test_response', max_batches=2000)
+
+        # Computed up to batch 22420
+        if calc_context_embeddings == True:
+            print 'Computing training context embeddings...'
+            train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train_context', max_batches=8000)
+
+            print 'Computing test context embeddings...'
+            test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test_context', max_batches=2000)
 
         
         #assert len(train_context_embeddings) == len(test_context_embeddings)
