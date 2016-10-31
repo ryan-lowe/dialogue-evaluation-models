@@ -98,21 +98,21 @@ def flatten_list(l1):
 
 # Compute model embeddings for contexts or responses 
 # Embedding type can be 'CONTEXT' or 'DECODER'
-def compute_model_embeddings(data, model, embedding_type, ftype, max_batches=np.infty):
+def compute_model_embeddings(data, model, embedding_type, ftype, starting_batch=0, max_batches=np.infty):
     model_compute_encoding = model.build_encoder_function()
     model_compute_decoder_encoding = model.build_decoder_encoding()
 
     embeddings = []
     context_ids_batch = []
-    batch_index = 0
+    batch_index = starting_batch
     batch_total = int(math.ceil(float(len(data)) / float(model.bs)))
     counter = 0
     fcounter = 0
     start = time.time()
     # TODO: remove temporary code
-    batch_index = int(max_batches / 2.0)
-    data = data[int(len(data)/2.0):]
-    fcounter = int(max_batches / 1000.0 / 2.0) + 2
+    data = data[starting_batch * model.bs:]
+    fcounter = int(starting_batch / 1000.0) + 1 #int(max_batches / 1000.0 / 2.0) + 2
+    print 'This code will first write to ' + ftype + '_emb' + str(fcounter) + '.pkl'
     ###
     for context_ids in data:
         context_ids_batch.append(context_ids)
@@ -139,7 +139,7 @@ def compute_model_embeddings(data, model, embedding_type, ftype, max_batches=np.
                     cPickle.dump(embeddings, open('/home/ml/rlowe1/TwitterData/vhred_emb_other/'+ftype+'_emb_'+str(fcounter)+'.pkl', 'w'))            
                 embeddings = []
 
-                if batch_index >= max_batches / 2.0:
+                if batch_index >= max_batches:
                     return embeddings
 
     return embeddings
@@ -324,21 +324,24 @@ if __name__ == '__main__':
         
         calc_response_embeddings = False
         calc_context_embeddings = True
+        calc_test = False
+        start_batch = 24000
+        max_batches = 35000
 
-        if calc_response_embeddings == True:
+        if calc_response_embeddings:
             print 'Computing training response embeddings...'
-            train_response_embeddings = compute_model_embeddings(train_responses, model, embedding_type, 'train_response', max_batches=8000)
+            train_response_embeddings = compute_model_embeddings(train_responses, model, embedding_type, 'train_response', starting_batch=start_batch, max_batches=max_batches)
+            if calc_test:
+                print 'Computing test response embeddings...'
+                test_response_embeddings = compute_model_embeddings(test_responses, model, embedding_type, 'test_response', max_batches=2000)
 
-            print 'Computing test response embeddings...'
-            test_response_embeddings = compute_model_embeddings(test_responses, model, embedding_type, 'test_response', max_batches=2000)
-
-        # Computed up to batch 22420
-        if calc_context_embeddings == True:
+        # Computed up to batch 22420 for DECODER
+        if calc_context_embeddings:
             print 'Computing training context embeddings...'
-            train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train_context', max_batches=8000)
-
-            print 'Computing test context embeddings...'
-            test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test_context', max_batches=2000)
+            train_context_embeddings = compute_model_embeddings(train_contexts, model, embedding_type, 'train_context', starting_batch=start_batch, max_batches=max_batches)
+            if calc_test:
+                print 'Computing test context embeddings...'
+                test_context_embeddings = compute_model_embeddings(test_contexts, model, embedding_type, 'test_context', max_batches=2000)
 
         
         #assert len(train_context_embeddings) == len(test_context_embeddings)

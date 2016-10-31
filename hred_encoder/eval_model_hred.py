@@ -610,8 +610,6 @@ if __name__ == '__main__':
     # Main loop through hyperparameter search
     separate_pca = False
     total_summary = ''
-    pca_list = [5, 10, 20, 50, 100, 200, 500, 1000, 2000]
-    l2reg_list = [0, 1e-6, 1e-4, 1e-2]
     pca_list = [5, 7, 10, 15, 20, 35, 50, 100]
     l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
     l2reg_list = [0]
@@ -625,9 +623,14 @@ if __name__ == '__main__':
                             + str(l2reg) + ', l1reg=' + str(l1reg) + ' %%%%%%%%%%%%%%'
                     if separate_pca == False:
                         print 'Also, combined PCA with ' + embedding_type + ' embeddings'
-                    # Reduce the dimensionality of the embeddings with PCA
-                    train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
                     
+                    # Separate into train and test (for the embedding data, this is done inside
+                    # the PCA function
+                    train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+                    train_y = np.array(twitter_human_scores[:train_index])
+                    test_y = np.array(twitter_human_scores[train_index:])
+                    
+                    # Reduce the dimensionality of the embeddings with PCA
                     if pca_components == last_pca:
                         print 'Using embeddings from last round...'                    
                     else:
@@ -645,13 +648,7 @@ if __name__ == '__main__':
                             twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
                             pca_prefix = ''
                     init_mean, init_range = compute_init_values(train_x)
-                    
-                    # train_index_str = int((1 - test_pct) * twitter_dialogue_embeddings2.shape[0])
-
-                    # Separate into training and test sets
-                    train_y = np.array(twitter_human_scores[:train_index])
-                    test_y = np.array(twitter_human_scores[train_index:])
-                    
+                   
                     print 'Computing auxiliary features...'
                     aux_features = None
                     if use_aux_features:
