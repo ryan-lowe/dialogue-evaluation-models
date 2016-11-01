@@ -164,13 +164,15 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
     bleu4_list = []
     rouge_list = []
     meteor_list = []
+    print Meteor()._score(test_gtresponses[0], test_modelresponses[0])
     for i in xrange(len(test_modelresponses)):
-        bleu1_list.append(Bleu(1).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][0])
-        bleu2_list.append(Bleu(2).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][1])
-        bleu3_list.append(Bleu(3).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][2])
-        bleu4_list.append(Bleu(4).compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0][3])
-        rouge_list.append(Rouge().compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]})[0])
-        #meteor_list.append(Meteor().compute_score({0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]}))
+        dict_input = {0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]}
+        bleu1_list.append(Bleu(1).compute_score(dict_input)[0][0])
+        bleu2_list.append(Bleu(2).compute_score(dict_input)[0][1])
+        bleu3_list.append(Bleu(3).compute_score(dict_input)[0][2])
+        bleu4_list.append(Bleu(4).compute_score(dict_input)[0][3])
+        rouge_list.append(Rouge().compute_score(dict_input)[0])
+        meteor_list.append(Meteor().compute_score(dict_input))
 
     metric_list = [bleu1_list, bleu2_list, bleu3_list, bleu4_list, rouge_list, meteor_list]
     metric_name = ['bleu1', 'bleu2', 'bleu3', 'bleu4', 'rouge', 'meteor']
@@ -247,20 +249,24 @@ def compute_model_embeddings(data, model, embedding_type):
     return embeddings
 
 def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
-    aux_features = np.zeros((num_examples, 4))
+    aux_features = np.zeros((num_examples, 5))
+    bleu1 = []
     bleu2 = []
     bleu3 = []
+    bleu4 = []
     meteor = []
     rouge = []
     for i in xrange(num_examples):
-        bleu2.append(Bleu(2).compute_score(gtresponses[i], modelresponses[i]))
-        bleu3.append(Bleu(3).compute_score(gtresponses[i], modelresponses[i]))
-        rouge.append(Rouge().compute_score(gtresponses[i], modelresponses[i]))
-        meteor.append(Meteor().compute_score(gtresponses[i], modelresponses[i]))
-    aux_features[:,0] = bleu2
-    aux_features[:,1] = bleu3
-    aux_features[:,2] = rouge
-    aux_features[:,3] = meteor
+        bleu1.append(Bleu(1).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][0])
+        bleu2.append(Bleu(2).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][1])
+        bleu3.append(Bleu(3).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][2])
+        bleu4.append(Bleu(4).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][3])
+        rouge.append(Rouge().compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0])
+    aux_features[:,0] = bleu1
+    aux_features[:,1] = bleu2
+    aux_features[:,2] = bleu3
+    aux_features[:,3] = bleu4
+    aux_features[:,4] = rouge
     return aux_features
 
 def make_plot(model_scores, human_scores, filename):
@@ -302,7 +308,7 @@ class LinearEvalModel(object):
 
     input has shape (batch size x 3 x emb dimensionality)
     """
-    def __init__(self, input, emb_dim, batch_size, init_mean, init_range, feat_dim=0, aux_features=None):
+    def __init__(self, input, feat, emb_dim, batch_size, init_mean, init_range, feat_dim=0):
         self.M = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.N = theano.shared(np.eye(emb_dim).astype(theano.config.floatX), borrow=True)
         self.f = theano.shared(np.zeros((feat_dim,)).astype(theano.config.floatX), borrow=True)
@@ -311,14 +317,15 @@ class LinearEvalModel(object):
         self.emb_context = input[:,0,:]
         self.emb_response = input[:,1,:]
         self.emb_true_response = input[:,2,:]
+        self.feat = feat
 
 
         # Compute predictions
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
         self.pred2 = T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
-        self.pred3 = 0
+        #self.pred3 = 0
         # TODO: add condition here that works
-        #self.pred3 = T.dot(self.f, self.aux_features)
+        self.pred3 = T.dot(self.feat, self.f)
         self.pred = self.pred1 + self.pred2 + self.pred3
 
         # Julian: I think adding a squared error on top of a sigmoid function will be difficult to train.
@@ -337,25 +344,30 @@ class LinearEvalModel(object):
         return self.M.norm(1) + self.N.norm(1)
 
 
-def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100,
-        batch_size=16, l2reg=0, l1reg=0, feat_dim=0, aux_features=None, pca_name=None, exp_folder=None):
+def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100, \
+        batch_size=16, l2reg=0, l1reg=0, train_feat=None, test_feat=None, pca_name=None, \
+        exp_folder=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
     emb_dim = int(train_x.shape[2])
+    feat_dim = int(train_feat.shape[1])
+    
     
     train_y_values = train_y
     train_x = set_shared_variable(train_x)
     test_x = set_shared_variable(test_x)
     train_y = set_shared_variable(train_y)
+    train_feat = set_shared_variable(train_feat)
+    test_feat = set_shared_variable(test_feat)
     
     index = T.lscalar()
     x = T.tensor3('x')
     y = T.fvector('y')
-    feat = T.fvector('feat')
-    
-    model = LinearEvalModel(input=x, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
-            feat_dim=feat_dim, aux_features=feat)
+    feat = T.fmatrix('feat')
+
+    model = LinearEvalModel(input=x, feat=feat, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
+            feat_dim=feat_dim)
 
     cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
         
@@ -363,7 +375,8 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
         inputs=[],
         outputs=model.output,
         givens={
-            x: test_x
+            x: test_x,
+            feat: test_feat
         }
     )
 
@@ -371,16 +384,17 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
         inputs=[],
         outputs=model.output,
         givens={
-            x: train_x
+            x: train_x,
+            feat: train_feat
         }
     )
     
     g_M = T.grad(cost=cost, wrt=model.M)
     g_N = T.grad(cost=cost, wrt=model.N)
-    #g_feat = T.grad(cost=cost, wrt=model.feat)
+    g_f = T.grad(cost=cost, wrt=model.f)
     updates = [ (model.M, model.M - learning_rate * g_M),
-                (model.N, model.N - learning_rate * g_N) ]
-                #(model.feat, model.feat - learning_rate * g_feat) ]
+                (model.N, model.N - learning_rate * g_N), 
+                (model.f, model.f - learning_rate * g_f) ]
 
     train_model = theano.function(
         inputs=[index],
@@ -388,7 +402,8 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
         updates=updates,
         givens={
             x: train_x[index * batch_size: (index + 1) * batch_size],
-            y: train_y[index * batch_size: (index + 1) * batch_size]
+            y: train_y[index * batch_size: (index + 1) * batch_size],
+            feat: train_feat[index * batch_size: (index + 1) * batch_size]
         }
     )
     
@@ -466,24 +481,26 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     return '\n\n' + print_string
 
 if __name__ == '__main__':
-    test_pct = 0.2
-    pca_components = 200
-    use_aux_features = False
+    test_pct = 0.20
+    pca_components = 5
+    use_aux_features = True
     use_precomputed_embeddings = True
-    eval_overlap_metrics = False
+    eval_overlap_metrics = True
 
     print 'Loading data...'
     
     #ubuntu_file = '../ubuntu_human_data.csv'
     #twitter_file = '../twitter_human_data.csv'
     clean_data_file = '../clean_data.pkl'   # Dictionary with userid as key, list of dicts as values, where each
-                                            # dict represents a single context (c_id is the key for looking up contexts in context.pkl
+                                            # dict represents a single context (c_id is the key for looking up contexts in context.pkl)
     twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
     twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
     
-    if len(sys.argv) > 0 and sys.argv[2] != None:
-        embedding_type = sys.argv[2]
-    #embedding_type = 'CONTEXT' # Can be "CONTEXT" or "DECODER"   
+    if len(sys.argv) > 2:
+        if sys.argv[2] != None:
+            embedding_type = sys.argv[2]
+    else:
+        embedding_type = 'CONTEXT' # Can be "CONTEXT" or "DECODER"   
     print 'Embedding type is ' + embedding_type
     
     if embedding_type == 'CONTEXT':
@@ -495,8 +512,6 @@ if __name__ == '__main__':
         modelresponses_embedding_file = './modelresponses_emb_vhreddecoder.pkl'
         gtresponses_embedding_file = './gtresponses_emb_vhreddecoder.pkl'
     
-    print context_embedding_file
-
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
@@ -584,11 +599,14 @@ if __name__ == '__main__':
     # Copy the contexts and gt responses 4 times (to align with the model responses)
     temp_c_emb = []
     temp_gt_emb = []
+    temp_gt = []
     for i in xrange(len(twitter_context_embeddings)):
         temp_c_emb.append([twitter_context_embeddings[i]]*4)
         temp_gt_emb.append([twitter_gtresponses_embeddings[i]]*4)
+        temp_gt.append([twitter_gtresponses[i]]*4)
     twitter_context_embeddings = [i for sublist in temp_c_emb for i in sublist]
     twitter_gtresponses_embeddings = [i for sublist in temp_gt_emb for i in sublist]
+    twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
 
     assert len(twitter_context_embeddings) == len(twitter_gtresponses_embeddings)
     assert len(twitter_context_embeddings) == len(twitter_modelresponses_embeddings)
@@ -606,6 +624,12 @@ if __name__ == '__main__':
     else:
         exp_name = 'rand_exp_' + str(randint(0,99))
     exp_folder = exp_name + '/'
+    
+    print 'Computing auxiliary features...'
+    if use_aux_features:
+        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_modelresponses))
+    else:
+        aux_features = np.zeros((len(twitter_contexts), 5))
 
     # Main loop through hyperparameter search
     separate_pca = False
@@ -620,7 +644,8 @@ if __name__ == '__main__':
             for l2reg in l2reg_list:
                 for l1reg in l1reg_list:
                     print '\n%%%%%%%%%%%%%  Running experiment with PCA=' + str(pca_components) + ', l2reg=' \
-                            + str(l2reg) + ', l1reg=' + str(l1reg) + ' %%%%%%%%%%%%%%'
+                            + str(l2reg) + ', l1reg=' + str(l1reg) + ', aux_feat=' + str(use_aux_features) + \
+                            ' %%%%%%%%%%%%%%'
                     if separate_pca == False:
                         print 'Also, combined PCA with ' + embedding_type + ' embeddings'
                     
@@ -647,16 +672,13 @@ if __name__ == '__main__':
                         else:
                             twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
                             pca_prefix = ''
-                    init_mean, init_range = compute_init_values(train_x)
-                   
-                    print 'Computing auxiliary features...'
-                    aux_features = None
-                    if use_aux_features:
-                        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_contexts))
+                    init_mean, init_range = compute_init_values(train_x)                                    
 
+                    train_feat = aux_features[:train_index]
+                    test_feat = aux_features[train_index:]
                     print 'Training model...'
-                    summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, aux_features=aux_features, \
-                            pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+                    summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, train_feat=train_feat, \
+                            test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
                     total_summary += summary
                     last_pca = pca_components
      
