@@ -54,7 +54,6 @@ def get_score(data):
 
 def preprocess_tweet(s):
     s = s.replace('@user', '<at>').replace('&lt;heart&gt;', '<heart>').replace('&lt;number&gt;', '<number>').replace('  ', ' </s> ').replace('  ', ' ')
-
     # Make sure we end with </s> token
     while s[-1] == ' ':
         s = s[0:-1]
@@ -74,12 +73,19 @@ def strs_to_idxs(data, bpe, str_to_idx):
 
     return out
 
+def idxs_to_strs(data, bpe, idx_to_str):
+    ''' Converts from BPE form to strings '''
+    out = []
+    for row in data:
+        out.append(' '.join([idx_to_str[idx] for idx in row if idx in idx_to_str]).replace('@@ ',''))
+    return out
+
 def get_context(data):
     out = []
     for row in data:
-       out.append('</s> ' + preprocess_tweet(row[0][5:-2])) 
-       # TODO: this also puts the </s> token at the beginning of every context... 
-       # is that what we want?
+        out.append('</s> ' + preprocess_tweet(row[0][5:-2])) 
+        # TODO: this also puts the </s> token at the beginning of every context... 
+        # is that what we want?
 
     return out
 
@@ -117,7 +123,7 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
                 score_dic[dic['c_id']] = [dic['overall1'], dic['overall2'], dic['overall3'], dic['overall4']]
 
     context_list = []
-    gt_responses = []
+    gtresponses = []
     model_responses = []
     scores = []
 
@@ -127,11 +133,11 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
             context_list.append(c[1])
             model_responses.append(c[2:6])
             scores.append(score_dic[int(c[0])])
-            gt_responses.append(gt_unordered[int(c[0])])
+            gtresponses.append(gt_unordered[int(c[0])])
     model_responses = [i for sublist in model_responses for i in sublist] # flatten list
     scores = [float(i) for sublist in scores for i in sublist] # flatten list
     
-    return context_list, gt_responses, model_responses, scores
+    return context_list, gtresponses, model_responses, scores
 
 def flatten(l1):
     return [i for sublist in l1 for i in sublist]
@@ -145,18 +151,19 @@ def compute_init_values(emb):
 
 
 # Prints BLEU, METEOR, etc. correlation scores on the test set
-def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct):
+def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct, liu=False):
     # Align ground truth with model responses
     temp_gt = []
-    for i in xrange(len(twitter_gtresponses)):
-        temp_gt.append([twitter_gtresponses[i]]*4)
-    twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
+    if not liu:
+        for i in xrange(len(twitter_gtresponses)):
+            temp_gt.append([twitter_gtresponses[i]]*4)
+        twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
 
     assert len(twitter_modelresponses) == len(twitter_gtresponses)
     assert len(twitter_modelresponses) == len(twitter_human_scores)
    
-    test_index = 0 # If you want to evaluate on the whole dataset
-    #test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
+    #test_index = 0 # If you want to evaluate on the whole dataset
+    test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
     test_gtresponses = twitter_gtresponses[test_index:]
     test_modelresponses = twitter_modelresponses[test_index:]
     test_scores = twitter_human_scores[test_index:]
@@ -167,15 +174,16 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
     bleu4_list = []
     rouge_list = []
     meteor_list = []
-    print Meteor()._score(test_gtresponses[0], test_modelresponses[0])
+    #print Meteor()._score(test_gtresponses[0], test_modelresponses[0])
     for i in xrange(len(test_modelresponses)):
-        dict_input = {0: [test_gtresponses[i]]}, {0: [test_modelresponses[i]]}
-        bleu1_list.append(Bleu(1).compute_score(dict_input)[0][0])
-        bleu2_list.append(Bleu(2).compute_score(dict_input)[0][1])
-        bleu3_list.append(Bleu(3).compute_score(dict_input)[0][2])
-        bleu4_list.append(Bleu(4).compute_score(dict_input)[0][3])
-        rouge_list.append(Rouge().compute_score(dict_input)[0])
-        meteor_list.append(Meteor().compute_score(dict_input))
+        dict_in1 = {0: [test_gtresponses[i]]}
+        dict_in2 = {0: [test_modelresponses[i]]}
+        bleu1_list.append(Bleu(1).compute_score(dict_in1, dict_in2)[0][0])
+        bleu2_list.append(Bleu(2).compute_score(dict_in1, dict_in2)[0][1])
+        bleu3_list.append(Bleu(3).compute_score(dict_in1, dict_in2)[0][2])
+        bleu4_list.append(Bleu(4).compute_score(dict_in1, dict_in2)[0][3])
+        rouge_list.append(Rouge().compute_score(dict_in1, dict_in2)[0])
+    #    meteor_list.append(Meteor().compute_score(dict_input))
 
     metric_list = [bleu1_list, bleu2_list, bleu3_list, bleu4_list, rouge_list, meteor_list]
     metric_name = ['bleu1', 'bleu2', 'bleu3', 'bleu4', 'rouge', 'meteor']
@@ -185,6 +193,14 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
         print 'For ' + name + ' score:'
         print spearman
         print pearson
+
+# Computes PCA decomposition for Liu et al.'s data (using PCA from train of original data) 
+def compute_liu_pca(pca_components, twitter_dialogue_embeddings, pca):
+    tw_embeddings_pca = np.zeros((twitter_dialogue_embeddings.shape[0], 3, pca_components))
+    for i in range(3):
+        tw_embeddings_pca[:,i] = pca.transform(twitter_dialogue_embeddings[:, i])
+    return tw_embeddings_pca
+
 
 # Computes PCA decomposition for the context, gt responses, and model responses separately
 def compute_separate_pca(pca_components, twitter_dialogue_embeddings):
@@ -223,7 +239,7 @@ def compute_pca(pca_components, twitter_dialogue_embeddings, train_index, val_in
         tw_emb_train[:,i] = tw_embeddings_pca_train[num_ex_train*i: num_ex_train*(i+1),:]
         tw_emb_val[:,i] = tw_embeddings_pca_val[num_ex_test*i: num_ex_test*(i+1),:]
         tw_emb_test[:,i] = tw_embeddings_pca_test[num_ex_test*i: num_ex_test*(i+1),:]
-    return tw_emb_train, tw_emb_val, tw_emb_test
+    return tw_emb_train, tw_emb_val, tw_emb_test, pca
 
 
 # Compute model embeddings for contexts or responses 
@@ -265,9 +281,6 @@ def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
     bleu4 = []
     meteor = []
     rouge = []
-    print num_examples
-    print len(gtresponses)
-    print len(modelresponses)
     for i in xrange(num_examples):
         bleu1.append(Bleu(1).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][0])
         bleu2.append(Bleu(2).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][1])
@@ -330,7 +343,7 @@ class LinearEvalModel(object):
         self.emb_response = input[:,1,:]
         self.emb_true_response = input[:,2,:]
         self.feat = feat
-
+        self.x = input
 
         # Compute predictions
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
@@ -355,6 +368,15 @@ class LinearEvalModel(object):
     def l1_regularization(self):
         return self.M.norm(1) + self.N.norm(1)
 
+    def get_params(self):
+        return [self.M, self.N, self.f]
+
+    def set_params(self, param_list):
+        self.M = param_list[0]
+        self.N = param_list[1]
+        self.f = param_list[2]
+        return
+
 
 def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100, \
         batch_size=16, l2reg=0, l1reg=0, train_feat=None, val_feat=None, test_feat=None, pca_name=None, \
@@ -375,7 +397,8 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     train_feat = set_shared_variable(train_feat)
     val_feat = set_shared_variable(val_feat)
     test_feat = set_shared_variable(test_feat)
-    
+
+   
     index = T.lscalar()
     x = T.tensor3('x')
     y = T.fvector('y')
@@ -413,7 +436,8 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
             feat: train_feat
         }
     )
-    
+ 
+   
     g_M = T.grad(cost=cost, wrt=model.M)
     g_N = T.grad(cost=cost, wrt=model.N)
     g_f = T.grad(cost=cost, wrt=model.f)
@@ -475,19 +499,21 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
             best_cor = val_correlation
             best_test_cor = test_correlation
             best_output = get_output_val()
+            best_params = model.get_params()
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
     
     end_time = time.time()
+
     folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l1=' + \
             str(l1reg) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
     print_string = '%%%% ' + folder_name + ' %%%%'
     print_string += '\n Finished training. Took %f s'%(end_time - start_time)
     print_string += '\n Spearman correlation (test): ' + str(best_test_cor[0])
     print_string += '\n Peason correlation (test): ' + str(best_test_cor[1])
-    print_string += '\n Best Spearman correlation: (val) ' + str(best_cor[0])
+    print_string += '\n Best Spearman correlation (val): ' + str(best_cor[0])
     print_string += '\n Best Peason correlation (val): ' + str(best_cor[1])
-    print_string +=  '\n Final Spearman correlation: (train) ' + str(train_correlation[0])
+    print_string +=  '\n Final Spearman correlation (train): ' + str(train_correlation[0])
     print_string +=  '\n Final Peason correlation (train): ' + str(train_correlation[1])
     print print_string
     if not os.path.exists('./results/' + exp_folder + folder_name):
@@ -498,7 +524,7 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     make_plot(first_output, test_y, './results/' + exp_folder + folder_name + '/init.png')
     make_plot(model_out, test_y, './results/' + exp_folder + folder_name + '/final(test).png')
     make_plot(model_train_out, train_y_values, './results/' + exp_folder + folder_name + '/final(train).png')
-    
+
     # Make learning curves
     epoch_list = range(len(loss_list))
     make_line_plot(loss_list, epoch_list, './results/' + exp_folder + folder_name + '/loss.png')
@@ -510,26 +536,62 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     # Save summary info
     with open('./results/' + exp_folder + folder_name + '/results.txt', 'w') as f1:
         f1.write(print_string)
-    return '\n\n' + print_string
+    return '\n\n' + print_string, folder_name, best_params, model
+
+
+def test(x_data, y_data, feat_data, best_params, model, exp_folder, folder_name, exp_name=''):
+    """ 
+    After training, tests model on new data
+    """
+    
+    x_data = set_shared_variable(x_data)
+    feat_data = set_shared_variable(feat_data)
+    
+    get_output_new = theano.function(
+        inputs=[],
+        outputs=model.output,
+        givens={
+            model.x: x_data, # TODO: figure out why this doesn't work with just x: 
+            model.feat: feat_data
+        }
+    )
+ 
+    model.set_params(best_params)
+    scores = get_output_new()
+    cor = correlation(scores, y_data)
+
+    print_string = ' - '*20
+    print_string +=  '\n Correlation for ' + exp_name + ': ' + str(cor[0])
+    print_string +=  '\n Correlation for ' + exp_name + ': ' + str(cor[1])
+    print print_string 
+
+    make_plot(scores, y_data, './results/' + exp_folder + folder_name + '/correlation_'+ exp_name + '.png')
+    with open('./results/' + exp_folder + folder_name + '/results.txt', 'w') as f1:
+        f1.write(print_string)
+
+    return print_string
+
 
 if __name__ == '__main__':
     val_pct = 0.15
     test_pct = 0.15
-    pca_components = 5
     use_aux_features = True
     use_precomputed_embeddings = True
     eval_overlap_metrics = False
-
+    use_precomputed_embeddings_liu = True
+    test_liu_data = False
+    use_precomputed_embeddings_ubuntu = True
+    test_ubuntu_data = False
     print 'Loading data...'
     
-    #ubuntu_file = '../ubuntu_human_data.csv'
-    #twitter_file = '../twitter_human_data.csv'
+    ubuntu_file = '../ubuntu_human_data.csv'
+    twitter_file_liu = '../twitter_human_data.csv'
     clean_data_file = '../clean_data.pkl'   # Dictionary with userid as key, list of dicts as values, where each
                                             # dict represents a single context (c_id is the key for looking up contexts in context.pkl)
     twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
     twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
-
-    twitter_file2 = '../contexts_new.pkl'
+    # New data from second round with Mike
+    twitter_file2 = '../contexts_new.pkl' 
     twitter_gt_file2 = '../true_new.txt'
     clean_data_file2 = '../clean_data_new.pkl'
     
@@ -544,6 +606,12 @@ if __name__ == '__main__':
         context_embedding_file = './context_emb_vhredcontext.pkl'
         modelresponses_embedding_file = './modelresponses_emb_vhredcontext.pkl'
         gtresponses_embedding_file = './gtresponses_emb_vhredcontext.pkl'
+        context_embedding_file_liu = './context_emb_vhredcontext_liu.pkl'
+        modelresponses_embedding_file_liu = './modelresponses_emb_vhredcontext_liu.pkl'
+        gtresponses_embedding_file_liu = './gtresponses_emb_vhredcontext_liu.pkl'
+        context_embedding_file_ubuntu = './context_emb_vhredcontext_ubuntu.pkl'
+        modelresponses_embedding_file_ubuntu= './modelresponses_emb_vhredcontext_ubuntu.pkl'
+        gtresponses_embedding_file_ubuntu = './gtresponses_emb_vhredcontext_ubuntu.pkl'
     elif embedding_type == 'DECODER':
         context_embedding_file = './context_emb_vhreddecoder.pkl'
         modelresponses_embedding_file = './modelresponses_emb_vhreddecoder.pkl'
@@ -564,122 +632,169 @@ if __name__ == '__main__':
     twitter_contexts2, twitter_gtresponses2, twitter_modelresponses2, twitter_human_scores2 = get_twitter_data(clean_data_file2, \
             twitter_file2, twitter_gt_file2)
     
+    # Adding first round of data to new round of data
     twitter_contexts += twitter_contexts2
     twitter_gtresponses += twitter_gtresponses2
     twitter_modelresponses += twitter_modelresponses2
     twitter_human_scores += twitter_human_scores2
 
-    if eval_overlap_metrics:
-        show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct)
-        
+       
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
     twitter_dict = cPickle.load(open(twitter_model_dictionary, 'r'))
     twitter_str_to_idx = dict([(tok, tok_id) for tok, tok_id, _, _ in twitter_dict])
+    twitter_idx_to_str = dict([(tok_id, tok) for tok, tok_id, _, _ in twitter_dict])    
 
-    # Get data, for Ubuntu
-    #ubuntu_data = load_data(ubuntu_file)
-    #ubuntu_human_scores = get_score(ubuntu_data)
+    # NOTE: there is still a problem with loading the Liu et al. data
+    # It doesn't get any correlation for any metrics.
 
-    # Get data, for Twitter (with old formatting)
-    #twitter_data = np.array(load_data(twitter_file))
-    #twitter_contexts = get_context(twitter_data)
-    #twitter_gtresponses = get_gtresponse(twitter_data)
-    #twitter_modelresponses = get_modelresponse(twitter_data)
-    #twitter_human_scores = get_score(twitter_data)
+    # Get Liu et al. data, for Ubuntu
+    ubuntu_data = load_data(ubuntu_file)
+    ubuntu_contexts = get_context(ubuntu_data)
+    ubuntu_gtresponses = get_gtresponse(ubuntu_data)
+    ubuntu_modelresponses = get_modelresponse(ubuntu_data)
+    ubuntu_human_scores = get_score(ubuntu_data)
 
-    # Encode text into BPE format
-    twitter_context_ids = strs_to_idxs(twitter_contexts, twitter_bpe, twitter_str_to_idx)
-    twitter_gtresponses_ids = strs_to_idxs(twitter_gtresponses, twitter_bpe, twitter_str_to_idx)
-    twitter_modelresponses_ids = strs_to_idxs(twitter_modelresponses, twitter_bpe, twitter_str_to_idx)
-    
-    # Compute VHRED embeddings
-    if use_precomputed_embeddings:
-        print 'Loading precomputed embeddings...'
-        with open(context_embedding_file, 'r') as f1:
-            twitter_context_embeddings = cPickle.load(f1)
-        with open(gtresponses_embedding_file, 'r') as f1:
-            twitter_gtresponses_embeddings = cPickle.load(f1)
-        with open(modelresponses_embedding_file, 'r') as f1:
-            twitter_modelresponses_embeddings = cPickle.load(f1)
-    
-    elif 'gpu' in theano.config.device.lower():
-        print 'Loading model...'
-        state = prototype_state()
-        state_path = twitter_model_prefix + "_state.pkl"
-        model_path = twitter_model_prefix + "_model.npz"
+    # Get Liu et al. data, for Twitter (with old formatting)
+    twitter_data_liu = load_data(twitter_file_liu)
+    twitter_contexts_liu = get_context(twitter_data_liu)
+    twitter_gtresponses_liu = get_gtresponse(twitter_data_liu)
+    twitter_modelresponses_liu = get_modelresponse(twitter_data_liu)
+    twitter_human_scores_liu = get_score(twitter_data_liu)
 
-        with open(state_path) as src:
-            state.update(cPickle.load(src))
+    #print twitter_contexts_liu[0]
+    #tw_ids = strs_to_idxs(twitter_contexts_liu, twitter_bpe, twitter_str_to_idx)
+    #print idxs_to_strs(tw_ids, twitter_bpe, twitter_idx_to_str)[0]
 
-        state['bs'] = 20
-        state['dictionary'] = twitter_model_dictionary
 
-        model = DialogEncoderDecoder(state) 
+    if eval_overlap_metrics:
+        #print 'For our Twitter...'
+        show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct)
+        print 'For Liu Twitter...'
+        #show_overlap_scores(ubuntu_gtresponses, ubuntu_modelresponses, ubuntu_human_scores, test_pct)
+        #show_overlap_scores(twitter_gtresponses_liu, twitter_modelresponses_liu, twitter_human_scores_liu, test_pct, liu=True)
+   
+    def preprocess_data(twitter_contexts, twitter_gtresponses, twitter_modelresponses, context_embedding_file, \
+            gtresponses_embedding_file, modelresponses_embedding_file, use_precomputed_embeddings, liu=False):
+        # Encode text into BPE format
+        twitter_context_ids = strs_to_idxs(twitter_contexts, twitter_bpe, twitter_str_to_idx)
+        twitter_gtresponse_ids = strs_to_idxs(twitter_gtresponses, twitter_bpe, twitter_str_to_idx)
+        twitter_modelresponse_ids = strs_to_idxs(twitter_modelresponses, twitter_bpe, twitter_str_to_idx)
         
-        print 'Computing context embeddings...'
-        twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model, embedding_type)
-        with open(context_embedding_file, 'w') as f1:
-            cPickle.dump(twitter_context_embeddings, f1)
-        print 'Computing ground truth response embeddings...'
-        twitter_gtresponses_embeddings = compute_model_embeddings(twitter_gtresponses_ids, model, embedding_type)
-        with open(gtresponses_embedding_file, 'w') as f1:
-            cPickle.dump(twitter_gtresponses_embeddings, f1)
-        print 'Computing model response embeddings...'
-        twitter_modelresponses_embeddings = compute_model_embeddings(twitter_modelresponses_ids, model, embedding_type)
-        with open(modelresponses_embedding_file, 'w') as f1:
-            cPickle.dump(twitter_modelresponses_embeddings, f1)
-    
-    else:
-        # Set embeddings to 0 for now. alternatively, we can load them from disc...
-        #embeddings = cPickle.load(open(embedding_file, 'rb'))
-        print 'ERROR: No GPU specified!'
-        print ' To save testing time, model will be trained with zero context / response embeddings...'
-        twitter_context_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-        twitter_gtresponses_embedding = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-        twitter_modelresponses_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-    
+        # Compute VHRED embeddings
+        if use_precomputed_embeddings:
+            print 'Loading precomputed embeddings...'
+            with open(context_embedding_file, 'r') as f1:
+                twitter_context_embeddings = cPickle.load(f1)
+            with open(gtresponses_embedding_file, 'r') as f1:
+                twitter_gtresponse_embeddings = cPickle.load(f1)
+            with open(modelresponses_embedding_file, 'r') as f1:
+                twitter_modelresponse_embeddings = cPickle.load(f1)
+        
+        elif 'gpu' in theano.config.device.lower():
+            print 'Loading model...'
+            state = prototype_state()
+            state_path = twitter_model_prefix + "_state.pkl"
+            model_path = twitter_model_prefix + "_model.npz"
 
-    # Copy the contexts and gt responses 4 times (to align with the model responses)
-    temp_c_emb = []
-    temp_gt_emb = []
-    temp_gt = []
-    for i in xrange(len(twitter_context_embeddings)):
-        temp_c_emb.append([twitter_context_embeddings[i]]*4)
-        temp_gt_emb.append([twitter_gtresponses_embeddings[i]]*4)
-        temp_gt.append([twitter_gtresponses[i]]*4)
-    twitter_context_embeddings = [i for sublist in temp_c_emb for i in sublist]
-    twitter_gtresponses_embeddings = [i for sublist in temp_gt_emb for i in sublist]
-    twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
+            with open(state_path) as src:
+                state.update(cPickle.load(src))
 
-    assert len(twitter_context_embeddings) == len(twitter_gtresponses_embeddings)
-    assert len(twitter_context_embeddings) == len(twitter_modelresponses_embeddings)
+            state['bs'] = 20
+            state['dictionary'] = twitter_model_dictionary
 
-    emb_dim = twitter_context_embeddings[0].shape[0]
+            model = DialogEncoderDecoder(state) 
+            
+            print 'Computing context embeddings...'
+            twitter_context_embeddings = compute_model_embeddings(twitter_context_ids, model, embedding_type)
+            with open(context_embedding_file, 'w') as f1:
+                cPickle.dump(twitter_context_embeddings, f1)
+            print 'Computing ground truth response embeddings...'
+            twitter_gtresponse_embeddings = compute_model_embeddings(twitter_gtresponse_ids, model, embedding_type)
+            with open(gtresponses_embedding_file, 'w') as f1:
+                cPickle.dump(twitter_gtresponse_embeddings, f1)
+            print 'Computing model response embeddings...'
+            twitter_modelresponse_embeddings = compute_model_embeddings(twitter_modelresponse_ids, model, embedding_type)
+            with open(modelresponses_embedding_file, 'w') as f1:
+                cPickle.dump(twitter_modelresponse_embeddings, f1)
+       
+        else:
+            # Set embeddings to 0 for now. alternatively, we can load them from disc...
+            #embeddings = cPickle.load(open(embedding_file, 'rb'))
+            print 'ERROR: No GPU specified!'
+            print ' To save testing time, model will be trained with zero context / response embeddings...'
+            twitter_context_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+            twitter_gtresponses_embedding = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+            twitter_modelresponse_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+        
+        print len(twitter_contexts)
+        print len(twitter_gtresponses)
+        print len(twitter_modelresponses)
+
+        print len(twitter_context_embeddings)
+        print len(twitter_gtresponse_embeddings)
+        print len(twitter_modelresponse_embeddings)
+
+        if not liu:
+            # Copy the contexts and gt responses 4 times (to align with the model responses)
+            temp_c_emb = []
+            temp_gt_emb = []
+            temp_gt = []
+            for i in xrange(len(twitter_context_embeddings)):
+                temp_c_emb.append([twitter_context_embeddings[i]]*4)
+                temp_gt_emb.append([twitter_gtresponse_embeddings[i]]*4)
+                temp_gt.append([twitter_gtresponses[i]]*4)
+            twitter_context_embeddings = flatten(temp_c_emb)
+            twitter_gtresponse_embeddings = flatten(temp_gt_emb)
+            twitter_gtresponses = flatten(temp_gt)
+
+        assert len(twitter_context_embeddings) == len(twitter_gtresponse_embeddings)
+        assert len(twitter_context_embeddings) == len(twitter_modelresponse_embeddings)
+
+        emb_dim = twitter_context_embeddings[0].shape[0]
+        
+        twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
+        for i in range(len(twitter_context_embeddings)):
+            twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
+            twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponse_embeddings[i]
+            twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponse_embeddings[i]
+     
+        print 'Computing auxiliary features...'
+        if use_aux_features:
+            aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_modelresponses))
+        else:
+            aux_features = np.zeros((len(twitter_modelresponses), 5))
+        
+        return twitter_dialogue_embeddings, aux_features 
     
-    twitter_dialogue_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-    for i in range(len(twitter_context_embeddings)):
-        twitter_dialogue_embeddings[i, 0, :] =  twitter_context_embeddings[i]
-        twitter_dialogue_embeddings[i, 1, :] =  twitter_gtresponses_embeddings[i]
-        twitter_dialogue_embeddings[i, 2, :] =  twitter_modelresponses_embeddings[i]
-    
+    twitter_dialogue_embeddings, aux_features = preprocess_data(twitter_contexts, twitter_gtresponses, twitter_modelresponses, context_embedding_file, \
+            gtresponses_embedding_file, modelresponses_embedding_file, use_precomputed_embeddings)
+
+    if test_liu_data:
+        print 'Preprocessing Liu et al. Twitter data...'
+        twitter_dialogue_embeddings_liu, liu_feat = preprocess_data(twitter_contexts_liu, twitter_gtresponses_liu, twitter_modelresponses_liu, \
+                context_embedding_file_liu, gtresponses_embedding_file_liu, modelresponses_embedding_file_liu, use_precomputed_embeddings_liu, liu=True)
+
+    if test_ubuntu_data:
+        print 'Preprocessing Ubuntu data...'
+        ubuntu_embeddings, ubuntu_feat = preprocess_data(ubuntu_contexts, ubuntu_gtresponses, ubuntu_modelresponses, \
+                context_embedding_file_ubuntu, gtresponses_embedding_file_ubuntu, modelresponses_embedding_file_ubuntu, use_precomputed_embeddings_ubuntu, liu=True)
+
+
+
+    emb_dim = twitter_dialogue_embeddings[0,0].shape[0]
     if len(sys.argv) > 0 and sys.argv[1] != None:
         exp_name = sys.argv[1]
     else:
         exp_name = 'rand_exp_' + str(randint(0,99))
     exp_folder = exp_name + '/'
     
-    print 'Computing auxiliary features...'
-    if use_aux_features:
-        aux_features = get_auxiliary_features(twitter_contexts, twitter_gtresponses, twitter_modelresponses, len(twitter_modelresponses))
-    else:
-        aux_features = np.zeros((len(twitter_contexts), 5))
-
     # Main loop through hyperparameter search
     separate_pca = False
     total_summary = ''
     pca_list = [5, 7, 10, 15, 20, 35, 50, 100]
-    l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
+#    l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
+    l1reg_list = [0.09, 0.13, 0.15, 0.17]
     l2reg_list = [0]
     lr_list = [0.01]
     last_pca = 0
@@ -700,7 +815,7 @@ if __name__ == '__main__':
                     train_y = np.array(twitter_human_scores[:train_index])
                     val_y = np.array(twitter_human_scores[train_index:val_index])
                     test_y = np.array(twitter_human_scores[val_index:])
-                    
+                     
                     # Reduce the dimensionality of the embeddings with PCA
                     if pca_components == last_pca:
                         print 'Using embeddings from last round...'                    
@@ -714,8 +829,12 @@ if __name__ == '__main__':
                                 test_x = twitter_dialogue_embeddings2[val_index:]
                                 pca_prefix = 'sep'
                             else: 
-                                train_x, val_x, test_x = compute_pca(pca_components, twitter_dialogue_embeddings, train_index, val_index)
+                                train_x, val_x, test_x, pca = compute_pca(pca_components, twitter_dialogue_embeddings, train_index, val_index)
                                 pca_prefix = ''
+                            if test_liu_data:
+                                liu_x = compute_liu_pca(pca_components, twitter_dialogue_embeddings_liu, pca)
+                            if test_ubuntu_data:
+                                ubuntu_x = compute_liu_pca(pca_components, ubuntu_embeddings, pca)
                         else:
                             twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
                             pca_prefix = ''
@@ -725,9 +844,16 @@ if __name__ == '__main__':
                     val_feat = aux_features[train_index:val_index]
                     test_feat = aux_features[val_index:]
                     print 'Training model...'
-                    summary = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
+                    summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
                             train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
                     total_summary += summary
+                    if test_liu_data:
+                        liu_summary =  test(liu_x, twitter_human_scores_liu, liu_feat, best_params, model, exp_folder, folder_name, exp_name='liu')
+                        total_summary += liu_summary
+                    if test_ubuntu_data:
+                        ubuntu_summary =  test(ubuntu_x, ubuntu_human_scores, ubuntu_feat, best_params, model, exp_folder, folder_name, exp_name='ubuntu')
+                        total_summary +=  ubuntu_summary
+ 
                     last_pca = pca_components
      
     with open('./results/summary_of_experiment_' + exp_name + '.txt', 'w') as f1:
