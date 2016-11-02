@@ -133,6 +133,9 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
     
     return context_list, gt_responses, model_responses, scores
 
+def flatten(l1):
+    return [i for sublist in l1 for i in sublist]
+
 # Compute mean and range of dot products to find right constants in model
 def compute_init_values(emb):
     prod_list = []
@@ -194,27 +197,33 @@ def compute_separate_pca(pca_components, twitter_dialogue_embeddings):
 # Computes PCA decomposition for the context, gt responses, and model responses together
 # NOTE: this computes the PCA on the training embeddings, and then applies them to the
 # test embeddings (it does not compute PCA on the testing embeddings)
-def compute_pca(pca_components, twitter_dialogue_embeddings, train_index):
+def compute_pca(pca_components, twitter_dialogue_embeddings, train_index, val_index):
     pca = PCA(n_components = pca_components)
     tw_nonpca_train = twitter_dialogue_embeddings[:train_index]
-    tw_nonpca_test = twitter_dialogue_embeddings[train_index:]
+    tw_nonpca_val = twitter_dialogue_embeddings[train_index:val_index]
+    tw_nonpca_test = twitter_dialogue_embeddings[val_index:]
 
     num_ex_train = tw_nonpca_train.shape[0]
-    num_ex_test = tw_nonpca_test.shape[0]
+    num_ex_test = tw_nonpca_test.shape[0]  # NOTE: we assume the val/ test set sizes are the same
     dim = twitter_dialogue_embeddings.shape[2]
     tw_embeddings_pca_train = np.zeros((num_ex_train * 3, dim))
+    tw_embeddings_pca_val = np.zeros((num_ex_test * 3, dim))
     tw_embeddings_pca_test = np.zeros((num_ex_test * 3, dim))
     for i in range(3):
         tw_embeddings_pca_train[num_ex_train*i: num_ex_train*(i+1),:] = tw_nonpca_train[:,i]
+        tw_embeddings_pca_val[num_ex_test*i: num_ex_test*(i+1),:] = tw_nonpca_val[:,i]
         tw_embeddings_pca_test[num_ex_test*i: num_ex_test*(i+1),:] = tw_nonpca_test[:,i]
     tw_embeddings_pca_train = pca.fit_transform(tw_embeddings_pca_train)
+    tw_embeddings_pca_val = pca.transform(tw_embeddings_pca_val)
     tw_embeddings_pca_test = pca.transform(tw_embeddings_pca_test)
     tw_emb_train = np.zeros((num_ex_train, 3, pca_components))
+    tw_emb_val = np.zeros((num_ex_test, 3, pca_components))
     tw_emb_test = np.zeros((num_ex_test, 3, pca_components))
     for i in range(3):
         tw_emb_train[:,i] = tw_embeddings_pca_train[num_ex_train*i: num_ex_train*(i+1),:]
+        tw_emb_val[:,i] = tw_embeddings_pca_val[num_ex_test*i: num_ex_test*(i+1),:]
         tw_emb_test[:,i] = tw_embeddings_pca_test[num_ex_test*i: num_ex_test*(i+1),:]
-    return tw_emb_train, tw_emb_test
+    return tw_emb_train, tw_emb_val, tw_emb_test
 
 
 # Compute model embeddings for contexts or responses 
@@ -235,7 +244,7 @@ def compute_model_embeddings(data, model, embedding_type):
         counter += 1
         context_ids_batch.append(context_ids)
 
-        if len(context_ids_batch) == model.bs:# or counter == len(data):
+        if len(context_ids_batch) == model.bs or counter == len(data):
             batch_index += 1
             #if counter == len(data):
             #    model.bs = counter % model.bs
@@ -256,6 +265,9 @@ def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
     bleu4 = []
     meteor = []
     rouge = []
+    print num_examples
+    print len(gtresponses)
+    print len(modelresponses)
     for i in xrange(num_examples):
         bleu1.append(Bleu(1).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][0])
         bleu2.append(Bleu(2).compute_score({0: [gtresponses[i]]}, {0: [modelresponses[i]]})[0][1])
@@ -344,8 +356,8 @@ class LinearEvalModel(object):
         return self.M.norm(1) + self.N.norm(1)
 
 
-def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100, \
-        batch_size=16, l2reg=0, l1reg=0, train_feat=None, test_feat=None, pca_name=None, \
+def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100, \
+        batch_size=16, l2reg=0, l1reg=0, train_feat=None, val_feat=None, test_feat=None, pca_name=None, \
         exp_folder=None):
     
     print '...building model'
@@ -355,10 +367,13 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     
     
     train_y_values = train_y
+    val_y_values = val_y
     train_x = set_shared_variable(train_x)
+    val_x = set_shared_variable(val_x)
     test_x = set_shared_variable(test_x)
-    train_y = set_shared_variable(train_y)
+    train_y = set_shared_variable(train_y)    
     train_feat = set_shared_variable(train_feat)
+    val_feat = set_shared_variable(val_feat)
     test_feat = set_shared_variable(test_feat)
     
     index = T.lscalar()
@@ -379,6 +394,16 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             feat: test_feat
         }
     )
+
+    get_output_val = theano.function(
+        inputs=[],
+        outputs=model.output,
+        givens={
+            x: val_x,
+            feat: val_feat
+        }
+    )
+
 
     get_output_train = theano.function(
         inputs=[],
@@ -415,6 +440,8 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     loss_list = []
     spearman_train = []
     pearson_train = []
+    spearman_val = []
+    pearson_val = []
     spearman_test = []
     pearson_test = []
     best_correlation = -np.inf
@@ -429,20 +456,25 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             cost_list.append(minibatch_cost)
         model_out = get_output()
         model_train_out = get_output_train()
+        model_val_out = get_output_val()
         loss = sum(cost_list) / float(len(cost_list))
         loss_list.append(loss)
 
         train_correlation = correlation(model_train_out, train_y_values)
+        val_correlation = correlation(model_val_out, val_y_values)
         test_correlation = correlation(model_out, test_y)
         spearman_train.append(train_correlation[0][0])
+        spearman_val.append(val_correlation[0][0])
         spearman_test.append(test_correlation[0][0])
         pearson_train.append(train_correlation[1][0])
+        pearson_val.append(val_correlation[1][0])
         pearson_test.append(test_correlation[1][0])
         
-        if test_correlation[0][0] > best_correlation:
-            best_correlation = test_correlation[0][0]
-            best_cor = test_correlation
-            best_output = get_output()
+        if val_correlation[0][0] > best_correlation:
+            best_correlation = val_correlation[0][0]
+            best_cor = val_correlation
+            best_test_cor = test_correlation
+            best_output = get_output_val()
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
     
@@ -451,10 +483,10 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
             str(l1reg) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
     print_string = '%%%% ' + folder_name + ' %%%%'
     print_string += '\n Finished training. Took %f s'%(end_time - start_time)
-    print_string += '\n Best Spearman correlation: ' + str(best_cor[0])
-    print_string += '\n Best Peason correlation: ' + str(best_cor[1])
-    print_string += '\n Final Spearman correlation: (test) ' + str(test_correlation[0])
-    print_string += '\n Final Peason correlation (test): ' + str(test_correlation[1])
+    print_string += '\n Spearman correlation (test): ' + str(best_test_cor[0])
+    print_string += '\n Peason correlation (test): ' + str(best_test_cor[1])
+    print_string += '\n Best Spearman correlation: (val) ' + str(best_cor[0])
+    print_string += '\n Best Peason correlation (val): ' + str(best_cor[1])
     print_string +=  '\n Final Spearman correlation: (train) ' + str(train_correlation[0])
     print_string +=  '\n Final Peason correlation (train): ' + str(train_correlation[1])
     print print_string
@@ -481,11 +513,12 @@ def train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate
     return '\n\n' + print_string
 
 if __name__ == '__main__':
-    test_pct = 0.20
+    val_pct = 0.15
+    test_pct = 0.15
     pca_components = 5
     use_aux_features = True
     use_precomputed_embeddings = True
-    eval_overlap_metrics = True
+    eval_overlap_metrics = False
 
     print 'Loading data...'
     
@@ -495,6 +528,10 @@ if __name__ == '__main__':
                                             # dict represents a single context (c_id is the key for looking up contexts in context.pkl)
     twitter_file = '../contexts.pkl' # List of the form [context_id, context, resp1, resp2, resp3, resp4]
     twitter_gt_file = '../true.txt' # File with ground-truth responses. Line no. corresponds to context_id
+
+    twitter_file2 = '../contexts_new.pkl'
+    twitter_gt_file2 = '../true_new.txt'
+    clean_data_file2 = '../clean_data_new.pkl'
     
     if len(sys.argv) > 2:
         if sys.argv[2] != None:
@@ -524,7 +561,14 @@ if __name__ == '__main__':
     # Load Twitter evaluation data from .pkl files
     twitter_contexts, twitter_gtresponses, twitter_modelresponses, twitter_human_scores = get_twitter_data(clean_data_file, \
             twitter_file, twitter_gt_file)
+    twitter_contexts2, twitter_gtresponses2, twitter_modelresponses2, twitter_human_scores2 = get_twitter_data(clean_data_file2, \
+            twitter_file2, twitter_gt_file2)
     
+    twitter_contexts += twitter_contexts2
+    twitter_gtresponses += twitter_gtresponses2
+    twitter_modelresponses += twitter_modelresponses2
+    twitter_human_scores += twitter_human_scores2
+
     if eval_overlap_metrics:
         show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_human_scores, test_pct)
         
@@ -651,9 +695,11 @@ if __name__ == '__main__':
                     
                     # Separate into train and test (for the embedding data, this is done inside
                     # the PCA function
-                    train_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+                    train_index = int((1 - (val_pct + test_pct)) * twitter_dialogue_embeddings.shape[0])
+                    val_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
                     train_y = np.array(twitter_human_scores[:train_index])
-                    test_y = np.array(twitter_human_scores[train_index:])
+                    val_y = np.array(twitter_human_scores[train_index:val_index])
+                    test_y = np.array(twitter_human_scores[val_index:])
                     
                     # Reduce the dimensionality of the embeddings with PCA
                     if pca_components == last_pca:
@@ -664,10 +710,11 @@ if __name__ == '__main__':
                             if separate_pca:
                                 twitter_dialogue_embeddings2 = compute_separate_pca(pca_components, twitter_dialogue_embeddings)
                                 train_x = twitter_dialogue_embeddings2[:train_index]
-                                test_x = twitter_dialogue_embeddings2[train_index:]
+                                val_x = twitter_dialogue_embeddings2[train_index:val_index]
+                                test_x = twitter_dialogue_embeddings2[val_index:]
                                 pca_prefix = 'sep'
                             else: 
-                                train_x, test_x = compute_pca(pca_components, twitter_dialogue_embeddings, train_index)
+                                train_x, val_x, test_x = compute_pca(pca_components, twitter_dialogue_embeddings, train_index, val_index)
                                 pca_prefix = ''
                         else:
                             twitter_dialogue_embeddings2 = twitter_dialogue_embeddings
@@ -675,10 +722,11 @@ if __name__ == '__main__':
                     init_mean, init_range = compute_init_values(train_x)                                    
 
                     train_feat = aux_features[:train_index]
-                    test_feat = aux_features[train_index:]
+                    val_feat = aux_features[train_index:val_index]
+                    test_feat = aux_features[val_index:]
                     print 'Training model...'
-                    summary = train(train_x, test_x, train_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, train_feat=train_feat, \
-                            test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+                    summary = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
+                            train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
                     total_summary += summary
                     last_pca = pca_components
      
