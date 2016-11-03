@@ -115,13 +115,14 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
         for row in f1:
             gt_unordered.append(row)
     
-    # Retrieve scores and valid context ids from clean_data.pkl
+    # Retrieve scores and valid context ids from clean_data.pkli
+    valid_contextids = []
     score_dic = {}
     for user in clean_data:
         for dic in clean_data[user]:
             if int(dic['c_id']) >= 0:
                 score_dic[dic['c_id']] = [dic['overall1'], dic['overall2'], dic['overall3'], dic['overall4']]
-
+    
     context_list = []
     gtresponses = []
     model_responses = []
@@ -130,17 +131,96 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
     # Retrieve contexts and model responses from contexts.pkl
     for c in contexts:
         if int(c[0]) in score_dic:
+            valid_contextids.append(int(c[0]))
             context_list.append(c[1])
             model_responses.append(c[2:6])
             scores.append(score_dic[int(c[0])])
             gtresponses.append(gt_unordered[int(c[0])])
     model_responses = [i for sublist in model_responses for i in sublist] # flatten list
     scores = [float(i) for sublist in scores for i in sublist] # flatten list
-    
-    return context_list, gtresponses, model_responses, scores
+    valid_contextids.sort()
+    return context_list, gtresponses, model_responses, scores, valid_contextids
+
+def combine_contextids(cid1, cid2):
+    # Combines 2 lists of context ids
+    for cid in cid2:
+        if cid not in cid1:
+            cid1.append(cid)
+    cid1.sort()
+    return cid1
+
 
 def flatten(l1):
     return [i for sublist in l1 for i in sublist]
+
+def construct_filter(model_map, filtname, name):
+    filter_list = []
+    model_list = []
+    for key in model_map:
+        model_list.append(model_map[key])
+    model_list = flatten(model_list)
+    for model in model_list:
+        if model == filtname:
+            filter_list.append(0)
+        else:
+            filter_list.append(1)
+    if name == 'train':
+        return filter_list
+    else:
+        return [1 - i for i in filter_list]
+
+def apply_train_filter(train_x, train_y, train_feat, train_filt):
+    """
+    Applies filter to the training data, if you want to remove a certain model
+    """
+    train_x_l = list(train_x); train_y_l = list(train_y); train_feat_l = list(train_feat)
+    train_x_l2 = []; train_y_l2 = []; train_feat_l2 = []
+    
+    for i in xrange(len(train_filt)):
+        if train_filt[i] == 1:
+            train_x_l2.append(train_x_l[i])
+            train_y_l2.append(train_y_l[i])
+            train_feat_l2.append(train_feat_l[i])
+    
+    return np.array(train_x_l2), np.array(train_y_l2), np.array(train_feat_l2)
+
+
+def apply_test_filter(val_x, val_y, val_feat, test_x, test_y, test_feat, val_filt, test_filt):
+    """
+    Applies filter to the val/test data, if you want to remove certain models
+    """
+    val_x_l = list(val_x); val_y_l = list(val_y); val_feat_l = list(val_feat)
+    val_x_l2 = []; val_y_l2 = []; val_feat_l2 = []
+    test_x_l = list(test_x); test_y_l = list(test_y); test_feat_l = list(test_feat)
+    test_x_l2 = []; test_y_l2 = []; test_feat_l2 = []
+    
+    for i in xrange(len(val_filt)):
+        if val_filt[i] == 1:
+            val_x_l2.append(val_x_l[i])
+            val_y_l2.append(val_y_l[i])
+            val_feat_l2.append(val_feat_l[i])
+ 
+    for i in xrange(len(test_filt)):
+        if test_filt[i] == 1:
+            test_x_l2.append(test_x_l[i])
+            test_y_l2.append(test_y_l[i])
+            test_feat_l2.append(test_feat_l[i])
+ 
+    return np.array(val_x_l2), np.array(val_y_l2), np.array(val_feat_l2),\
+            np.array(test_x_l2), np.array(test_y_l2), np.array(test_feat_l2)
+
+
+def filter_modelmap(model_map, valid_contextids):
+    for key in list(model_map.keys()):
+        if key not in valid_contextids:
+            del model_map[key]
+    return model_map
+
+def fixmodelmap2(model_map2):
+    for key in list(model_map2.keys()):
+        if key <= 988:
+            del model_map2[key]
+    return model_map2
 
 # Compute mean and range of dot products to find right constants in model
 def compute_init_values(emb):
@@ -575,13 +655,15 @@ def test(x_data, y_data, feat_data, best_params, model, exp_folder, folder_name,
 if __name__ == '__main__':
     val_pct = 0.15
     test_pct = 0.15
-    use_aux_features = True
+    use_aux_features = False#True
     use_precomputed_embeddings = True
     eval_overlap_metrics = False
     use_precomputed_embeddings_liu = True
     test_liu_data = False
     use_precomputed_embeddings_ubuntu = True
     test_ubuntu_data = False
+    filtname = None #'de'
+    training_pct = 1
     print 'Loading data...'
     
     ubuntu_file = '../ubuntu_human_data.csv'
@@ -620,25 +702,36 @@ if __name__ == '__main__':
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
     twitter_model_dictionary = '../TwitterData/BPE/Dataset.dict.pkl'
-
     twitter_model_prefix = '/home/ml/rlowe1/TwitterData/hred_twitter_models/1470516214.08_TwitterModel__405001'
     #twitter_model_prefix = '../TwitterModel/1470516214.08_TwitterModel__405001'
     # previously: '../TwitterModel/1470516214.08_TwitterModel__405001'
     # changed due to disk space limitations on Ryan's machine
     
+    # Load model_map. Dictionary of the form {context_id: ['hred','tfidf', 'de', 'human']} (model order)
+    model_map_file = '../models.pkl'
+    model_map_file2 = '../models_new.pkl'
+    with open(model_map_file, 'r') as f1:
+        model_map = cPickle.load(f1)
+    with open(model_map_file2, 'r') as f1:
+        model_map2 = cPickle.load(f1)
+    # Any context_id>988 is invalid for model_map2, according to mike
+    model_map2 = fixmodelmap2(model_map2)
+    model_map = dict(model_map, **model_map2) # concatenate the dictionaries together
+    
     # Load Twitter evaluation data from .pkl files
-    twitter_contexts, twitter_gtresponses, twitter_modelresponses, twitter_human_scores = get_twitter_data(clean_data_file, \
+    twitter_contexts, twitter_gtresponses, twitter_modelresponses, twitter_human_scores, valid_contextids = get_twitter_data(clean_data_file, \
             twitter_file, twitter_gt_file)
-    twitter_contexts2, twitter_gtresponses2, twitter_modelresponses2, twitter_human_scores2 = get_twitter_data(clean_data_file2, \
+    twitter_contexts2, twitter_gtresponses2, twitter_modelresponses2, twitter_human_scores2, valid_contextids2 = get_twitter_data(clean_data_file2, \
             twitter_file2, twitter_gt_file2)
+    valid_contextids = combine_contextids(valid_contextids, valid_contextids2)
+    model_map = filter_modelmap(model_map, valid_contextids)
     
     # Adding first round of data to new round of data
     twitter_contexts += twitter_contexts2
     twitter_gtresponses += twitter_gtresponses2
     twitter_modelresponses += twitter_modelresponses2
     twitter_human_scores += twitter_human_scores2
-
-       
+    
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
     twitter_dict = cPickle.load(open(twitter_model_dictionary, 'r'))
@@ -665,7 +758,6 @@ if __name__ == '__main__':
     #print twitter_contexts_liu[0]
     #tw_ids = strs_to_idxs(twitter_contexts_liu, twitter_bpe, twitter_str_to_idx)
     #print idxs_to_strs(tw_ids, twitter_bpe, twitter_idx_to_str)[0]
-
 
     if eval_overlap_metrics:
         #print 'For our Twitter...'
@@ -726,14 +818,6 @@ if __name__ == '__main__':
             twitter_context_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
             twitter_gtresponses_embedding = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
             twitter_modelresponse_embeddings = np.zeros((len(twitter_context_embeddings), 3, emb_dim))
-        
-        print len(twitter_contexts)
-        print len(twitter_gtresponses)
-        print len(twitter_modelresponses)
-
-        print len(twitter_context_embeddings)
-        print len(twitter_gtresponse_embeddings)
-        print len(twitter_modelresponse_embeddings)
 
         if not liu:
             # Copy the contexts and gt responses 4 times (to align with the model responses)
@@ -789,12 +873,22 @@ if __name__ == '__main__':
         exp_name = 'rand_exp_' + str(randint(0,99))
     exp_folder = exp_name + '/'
     
+    train_index = int((1 - (val_pct + test_pct)) * twitter_dialogue_embeddings.shape[0])
+    val_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
+    
+    if filtname != None:
+        train_filt = construct_filter(model_map, filtname, 'train')[:train_index]
+        val_filt = construct_filter(model_map, filtname, 'val')
+        test_filt = val_filt[val_index:]
+        val_filt = val_filt[train_index:val_index]
+
     # Main loop through hyperparameter search
     separate_pca = False
     total_summary = ''
     pca_list = [5, 7, 10, 15, 20, 35, 50, 100]
-#    l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
-    l1reg_list = [0.09, 0.13, 0.15, 0.17]
+    l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
+    pca_list = [7]
+    l1reg_list = [0.02]
     l2reg_list = [0]
     lr_list = [0.01]
     last_pca = 0
@@ -810,8 +904,6 @@ if __name__ == '__main__':
                     
                     # Separate into train and test (for the embedding data, this is done inside
                     # the PCA function
-                    train_index = int((1 - (val_pct + test_pct)) * twitter_dialogue_embeddings.shape[0])
-                    val_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
                     train_y = np.array(twitter_human_scores[:train_index])
                     val_y = np.array(twitter_human_scores[train_index:val_index])
                     test_y = np.array(twitter_human_scores[val_index:])
@@ -843,6 +935,15 @@ if __name__ == '__main__':
                     train_feat = aux_features[:train_index]
                     val_feat = aux_features[train_index:val_index]
                     test_feat = aux_features[val_index:]
+                    
+                    if filtname != None:                        
+                        train_x, train_y, train_feat = apply_train_filter(train_x, train_y, train_feat, train_filt)
+                        #val_x, val_y, val_feat, test_x, test_y, test_feat = apply_test_filter(val_x, val_y, val_feat, test_x, test_y, test_feat, val_filt, test_filt)
+                    
+                    if training_pct != 1:
+                        train_x = train_x[:int(training_pct * train_index)]
+                        train_y = train_y[:int(training_pct * train_index)]
+                        train_feat = train_feat[:int(training_pct * train_index)]
                     print 'Training model...'
                     summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
                             train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
