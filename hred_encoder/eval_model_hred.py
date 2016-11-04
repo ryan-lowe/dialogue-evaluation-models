@@ -330,7 +330,6 @@ def compute_model_embeddings(data, model, embedding_type):
     model_compute_encoding = model.build_encoder_function()
     model_compute_decoder_encoding = model.build_decoder_encoding()
     model.bs = 20
-    print model.bs
     embeddings = []
     context_ids_batch = []
     batch_index = 0
@@ -377,14 +376,22 @@ def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
 def make_plot(model_scores, human_scores, filename):
     pp.clf()
     pp.plot(human_scores, model_scores, 'ko')
+    pp.plot(np.unique(human_scores), np.poly1d(np.polyfit(human_scores, model_scores, 1))(np.unique(human_scores)), 'r')
+    pp.xlabel('Human scores', fontsize=19)
+    pp.ylabel('Model scores', fontsize=19)
     pp.savefig(filename)
 
 def make_line_plot(model_scores, human_scores, filename):
     pp.clf()
     pp.plot(human_scores, model_scores)
+    pp.xlabel('Number of epochs')
     pp.savefig(filename)
 
-
+def extend_by_four(l_in):
+    l_temp = []
+    for i in xrange(len(l_in)):
+        l_temp.append([l_in[i]]*4)
+    return flatten(l_temp)
 
 
 #####################
@@ -427,7 +434,7 @@ class LinearEvalModel(object):
 
         # Compute predictions
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
-        self.pred2 = T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
+        self.pred2 = 0#T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
         #self.pred3 = 0
         # TODO: add condition here that works
         self.pred3 = T.dot(self.feat, self.f)
@@ -441,6 +448,9 @@ class LinearEvalModel(object):
 
     def squared_error(self, score):
         return T.mean((self.output - score)**2)
+
+    def linear_error(self, score):
+        return T.mean(T.log(T.exp(2*(self.output - score)) + 1) - (self.output - score))
 
     def l2_regularization(self):
         return self.M.norm(2) + self.N.norm(2)
@@ -460,7 +470,7 @@ class LinearEvalModel(object):
 
 def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=0.01, num_epochs=100, \
         batch_size=16, l2reg=0, l1reg=0, train_feat=None, val_feat=None, test_feat=None, pca_name=None, \
-        exp_folder=None):
+        exp_folder=None, test_contexts=None, test_modelresponses=None, test_gtresponses=None):
     
     print '...building model'
     n_train_batches = train_x.shape[0] / batch_size
@@ -487,8 +497,9 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     model = LinearEvalModel(input=x, feat=feat, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
             feat_dim=feat_dim)
 
-    cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
+    #cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
         
+    cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
     get_output = theano.function(
         inputs=[],
         outputs=model.output,
@@ -579,6 +590,7 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
             best_cor = val_correlation
             best_test_cor = test_correlation
             best_output = get_output_val()
+            best_output_test = get_output()
             best_params = model.get_params()
             #with open('best_model.pkl', 'w') as f:
             #    cPickle.dump(model, f)
@@ -602,9 +614,15 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     # Make scatter plots
     make_plot(best_output, test_y, './results/' + exp_folder + folder_name + '/best.png')
     make_plot(first_output, test_y, './results/' + exp_folder + folder_name + '/init.png')
-    make_plot(model_out, test_y, './results/' + exp_folder + folder_name + '/final(test).png')
+    make_plot(best_output_test, test_y, './results/' + exp_folder + folder_name + '/final(test).png')
     make_plot(model_train_out, train_y_values, './results/' + exp_folder + folder_name + '/final(train).png')
-
+    test_y_gauss = []
+    for y in test_y:
+        test_y_gauss.append(y + np.random.normal(0, 0.3))
+    make_plot(best_output, test_y_gauss, './results/' + exp_folder + folder_name + '/best_gauss.png')
+    make_plot(first_output, test_y_gauss, './results/' + exp_folder + folder_name + '/init_gauss.png')
+    make_plot(model_out, test_y_gauss, './results/' + exp_folder + folder_name + '/final(test)_gauss.png')
+    
     # Make learning curves
     epoch_list = range(len(loss_list))
     make_line_plot(loss_list, epoch_list, './results/' + exp_folder + folder_name + '/loss.png')
@@ -612,7 +630,17 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     make_line_plot(spearman_test, epoch_list, './results/' + exp_folder + folder_name + '/spear_test.png')
     make_line_plot(pearson_train, epoch_list, './results/' + exp_folder + folder_name + '/pear_train.png')
     make_line_plot(pearson_test, epoch_list, './results/' + exp_folder + folder_name + '/pear_test.png')
-    
+   
+    # Save model predictions
+    predictions = []
+    predictions.append(("Context", "GT response", "Model response", "ADEM prediction", "Human score"))
+    for i in xrange(len(test_y)):
+        predictions.append((test_contexts[i], test_gtresponses[i], test_modelresponses[i], model_out[i], test_y[i]))
+    with open('./results/' + exp_folder + folder_name + '/predictions.csv', 'w') as f1:
+        writer = csv.writer(f1)
+        for pred in predictions:
+            writer.writerow(pred)
+
     # Save summary info
     with open('./results/' + exp_folder + folder_name + '/results.txt', 'w') as f1:
         f1.write(print_string)
@@ -875,7 +903,8 @@ if __name__ == '__main__':
     
     train_index = int((1 - (val_pct + test_pct)) * twitter_dialogue_embeddings.shape[0])
     val_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
-    
+    print train_index
+    print val_index - train_index
     if filtname != None:
         train_filt = construct_filter(model_map, filtname, 'train')[:train_index]
         val_filt = construct_filter(model_map, filtname, 'val')
@@ -885,10 +914,12 @@ if __name__ == '__main__':
     # Main loop through hyperparameter search
     separate_pca = False
     total_summary = ''
-    pca_list = [5, 7, 10, 15, 20, 35, 50, 100]
+    pca_list = [5, 7, 10, 15, 20] #, 35, 50, 100]
     l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
-    pca_list = [7]
-    l1reg_list = [0.02]
+    pca_list = [20, 35, 50, 75, 100, 200]
+    l1reg_list = [0.0005, 0.001, 0.002, 0.005]
+    #pca_list = [7]
+    #l1reg_list = [0.02]
     l2reg_list = [0]
     lr_list = [0.01]
     last_pca = 0
@@ -945,8 +976,10 @@ if __name__ == '__main__':
                         train_y = train_y[:int(training_pct * train_index)]
                         train_feat = train_feat[:int(training_pct * train_index)]
                     print 'Training model...'
-                    summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
-                            train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder)
+                    #summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
+                    #        train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder, \
+                    #        test_contexts=extend_by_four(twitter_contexts)[val_index:], test_modelresponses=twitter_modelresponses[val_index:], \
+                    #        test_gtresponses=extend_by_four(twitter_gtresponses)[val_index:])
                     total_summary += summary
                     if test_liu_data:
                         liu_summary =  test(liu_x, twitter_human_scores_liu, liu_feat, best_params, model, exp_folder, folder_name, exp_name='liu')
