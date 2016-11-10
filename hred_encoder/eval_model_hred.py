@@ -1,10 +1,8 @@
 """
 Dialogue Evaluation Model using VHRED
 
-This code learns to predict human scores (on a small dataset, previously collected for emnlp 2016),
-using a simple linear model on top of VHRED embeddings.
-
-Currently, all embeddings are set to 0.
+This code learns to predict human scores
+using a linear model on top of VHRED embeddings.
 """
 
 import numpy as np
@@ -25,6 +23,8 @@ from pycocoevalcap.bleu.bleu import Bleu
 from pycocoevalcap.rouge.rouge import Rouge
 from pycocoevalcap.meteor.meteor import Meteor
 from random import randint
+from nltk.corpus import stopwords
+import string
 
 from dialog_encdec import DialogEncoderDecoder
 from numpy_compat import argpartition
@@ -35,6 +35,9 @@ import os
 os.sys.path.insert(0,'../TwitterData/BPE/subword_nmt') 
 
 from apply_bpe import BPE
+
+reload(sys)
+sys.setdefaultencoding('utf-8')
 
 def load_data(filein):
     # Input: csv file name (string)
@@ -115,14 +118,15 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
         for row in f1:
             gt_unordered.append(row)
     
-    # Retrieve scores and valid context ids from clean_data.pkli
+    # Retrieve scores and valid context ids from clean_data.pkl
     valid_contextids = []
     score_dic = {}
     for user in clean_data:
         for dic in clean_data[user]:
             if int(dic['c_id']) >= 0:
                 score_dic[dic['c_id']] = [dic['overall1'], dic['overall2'], dic['overall3'], dic['overall4']]
-    
+                # NOTE: although there's some contexts with multiple responses, the above line basically uses the last score
+                # for each context (so there is no context overlap between train and test)
     context_list = []
     gtresponses = []
     model_responses = []
@@ -138,6 +142,7 @@ def get_twitter_data(clean_data_file, context_file, gt_file):
             gtresponses.append(gt_unordered[int(c[0])])
     model_responses = [i for sublist in model_responses for i in sublist] # flatten list
     scores = [float(i) for sublist in scores for i in sublist] # flatten list
+
     valid_contextids.sort()
     return context_list, gtresponses, model_responses, scores, valid_contextids
 
@@ -235,15 +240,13 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
     # Align ground truth with model responses
     temp_gt = []
     if not liu:
-        for i in xrange(len(twitter_gtresponses)):
-            temp_gt.append([twitter_gtresponses[i]]*4)
-        twitter_gtresponses = [i for sublist in temp_gt for i in sublist]
+        twitter_gtresponses = extend_by_four(twitter_gtresponses)
 
     assert len(twitter_modelresponses) == len(twitter_gtresponses)
     assert len(twitter_modelresponses) == len(twitter_human_scores)
    
-    #test_index = 0 # If you want to evaluate on the whole dataset
-    test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
+    test_index = 0 # If you want to evaluate on the whole dataset
+    #test_index = int( (1 - test_pct) * len(twitter_modelresponses) )
     test_gtresponses = twitter_gtresponses[test_index:]
     test_modelresponses = twitter_modelresponses[test_index:]
     test_scores = twitter_human_scores[test_index:]
@@ -255,15 +258,41 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
     rouge_list = []
     meteor_list = []
     #print Meteor()._score(test_gtresponses[0], test_modelresponses[0])
+    start = time.time()
     for i in xrange(len(test_modelresponses)):
-        dict_in1 = {0: [test_gtresponses[i]]}
-        dict_in2 = {0: [test_modelresponses[i]]}
+        dict_in1 = {0: [test_gtresponses[i].encode('utf-8').strip()]}
+        dict_in2 = {0: [test_modelresponses[i].encode('utf-8').strip()]}
         bleu1_list.append(Bleu(1).compute_score(dict_in1, dict_in2)[0][0])
         bleu2_list.append(Bleu(2).compute_score(dict_in1, dict_in2)[0][1])
         bleu3_list.append(Bleu(3).compute_score(dict_in1, dict_in2)[0][2])
         bleu4_list.append(Bleu(4).compute_score(dict_in1, dict_in2)[0][3])
         rouge_list.append(Rouge().compute_score(dict_in1, dict_in2)[0])
-    #    meteor_list.append(Meteor().compute_score(dict_input))
+        #meteor_list.append(Meteor().compute_score(dict_in1, dict_in2)[0]) # Can comment this out since it takes so long
+        #if i%10 == 0:
+        #    print str(i) + ' / ' + str(len(test_modelresponses))
+        #    print time.time() - start
+    print 'Took: ' + str(time.time() - start)
+
+    for i in xrange(len(twitter_gtresponses)):
+        print twitter_gtresponses[i]
+        print twitter_modelresponses[i]
+        print bleu2_list[i]
+        print rouge_list[i]
+        print twitter_human_scores[i]
+
+    test_y_gauss = []
+    for y in test_scores:
+        test_y_gauss.append(y + np.random.normal(0, 0.3))
+    
+    suffix = ''
+    if test_index == 0:
+        suffix = '_full'
+    make_plot(bleu1_list, test_y_gauss, './results/word_overlap/bleu1_gauss' + suffix + '.png')
+    make_plot(bleu2_list, test_y_gauss, './results/word_overlap/bleu2_gauss' + suffix + '.png')
+    make_plot(bleu3_list, test_y_gauss, './results/word_overlap/bleu3_gauss' + suffix + '.png')
+    make_plot(bleu4_list, test_y_gauss, './results/word_overlap/bleu4_gauss' + suffix + '.png')
+    make_plot(rouge_list, test_y_gauss, './results/word_overlap/rouge_gauss' + suffix + '.png')
+    #make_plot(meteor_list, test_y_gauss, './results/word_overlap/meteor_gauss.png')
 
     metric_list = [bleu1_list, bleu2_list, bleu3_list, bleu4_list, rouge_list, meteor_list]
     metric_name = ['bleu1', 'bleu2', 'bleu3', 'bleu4', 'rouge', 'meteor']
@@ -273,6 +302,10 @@ def show_overlap_scores(twitter_gtresponses, twitter_modelresponses, twitter_hum
         print 'For ' + name + ' score:'
         print spearman
         print pearson
+        with open('./metric_scores/' + name + '.txt', 'w') as f1:
+            for score in metric:
+                f1.write(str(score)+'\n')
+
 
 # Computes PCA decomposition for Liu et al.'s data (using PCA from train of original data) 
 def compute_liu_pca(pca_components, twitter_dialogue_embeddings, pca):
@@ -376,7 +409,7 @@ def get_auxiliary_features(contexts, gtresponses, modelresponses, num_examples):
 def make_plot(model_scores, human_scores, filename):
     pp.clf()
     pp.plot(human_scores, model_scores, 'ko')
-    pp.plot(np.unique(human_scores), np.poly1d(np.polyfit(human_scores, model_scores, 1))(np.unique(human_scores)), 'r')
+    pp.plot(np.unique(human_scores), np.poly1d(np.polyfit(human_scores, model_scores, 1))(np.unique(human_scores)), 'r', linewidth=2.5)
     pp.xlabel('Human scores', fontsize=19)
     pp.ylabel('Model scores', fontsize=19)
     pp.savefig(filename)
@@ -393,6 +426,17 @@ def extend_by_four(l_in):
         l_temp.append([l_in[i]]*4)
     return flatten(l_temp)
 
+def calc_system_scores(model_map, predictions):
+    # Mike ended up doing this, so disregard
+    model_list = ['de', 'human', 'tfidf', 'hred']
+    scores = []
+    for model in model_list:
+        filt = construct_filter(model_map, model, 'test')
+        pred_list = []
+        for i in xrange(len(pred)):
+            if filt[i] == 1:
+                pred_list.append(pred[i])
+        scores.append(np.mean(np.array(pred_list)))
 
 #####################
 # Code for learning #
@@ -434,7 +478,7 @@ class LinearEvalModel(object):
 
         # Compute predictions
         self.pred1 = T.sum(self.emb_context * T.dot(self.emb_response, self.M), axis=1)
-        self.pred2 = 0#T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
+        self.pred2 = T.sum(self.emb_true_response * T.dot(self.emb_response, self.N), axis=1)
         #self.pred3 = 0
         # TODO: add condition here that works
         self.pred3 = T.dot(self.feat, self.f)
@@ -497,8 +541,6 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     model = LinearEvalModel(input=x, feat=feat, emb_dim=emb_dim, batch_size=batch_size, init_mean=init_mean, init_range=init_range, \
             feat_dim=feat_dim)
 
-    #cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
-        
     cost = model.squared_error(y) + l2reg * model.l2_regularization() + l1reg * model.l1_regularization()
     get_output = theano.function(
         inputs=[],
@@ -550,6 +592,9 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     print '..starting training'
     epoch = 0
     first_output = get_output()
+    first_cor = correlation(first_output, test_y)
+    first_cor_val = correlation(get_output_val(), val_y_values)
+    first_cor_train = correlation(get_output_train(), train_y_values)
     best_output = np.zeros((50,)) 
     best_cor = [0,0]
     loss_list = []
@@ -596,7 +641,8 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
             #    cPickle.dump(model, f)
     
     end_time = time.time()
-
+    
+    # Print out results
     folder_name = pca_name + '_bs=' + str(batch_size) + '_lr=' + str(learning_rate) + '_l1=' + \
             str(l1reg) + '_l2=' + str(l2reg) + '_epochs=' + str(num_epochs) 
     print_string = '%%%% ' + folder_name + ' %%%%'
@@ -607,6 +653,13 @@ def train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range,
     print_string += '\n Best Peason correlation (val): ' + str(best_cor[1])
     print_string +=  '\n Final Spearman correlation (train): ' + str(train_correlation[0])
     print_string +=  '\n Final Peason correlation (train): ' + str(train_correlation[1])
+    print_string +=  '\n Final Peason correlation (train): ' + str(train_correlation[1])
+    print_string +=  '\n Initial Spearman correlation (train): ' + str(first_cor_train[0])
+    print_string +=  '\n Initial Peason correlation (train): ' + str(first_cor_train[1])
+    #print_string +=  '\n Initial Spearman correlation (test): ' + str(first_cor[0])
+    #print_string +=  '\n Initial Peason correlation (test): ' + str(first_cor[1])
+    #print_string +=  '\n Initial Spearman correlation (val): ' + str(first_cor_val[0])
+    #print_string +=  '\n Initial Peason correlation (val): ' + str(first_cor_val[1])
     print print_string
     if not os.path.exists('./results/' + exp_folder + folder_name):
         os.makedirs('./results/' + exp_folder + folder_name)
@@ -674,7 +727,7 @@ def test(x_data, y_data, feat_data, best_params, model, exp_folder, folder_name,
     print print_string 
 
     make_plot(scores, y_data, './results/' + exp_folder + folder_name + '/correlation_'+ exp_name + '.png')
-    with open('./results/' + exp_folder + folder_name + '/results.txt', 'w') as f1:
+    with open('./results/' + exp_folder + folder_name + '/results.txt', 'wb') as f1:
         f1.write(print_string)
 
     return print_string
@@ -687,11 +740,11 @@ if __name__ == '__main__':
     use_precomputed_embeddings = True
     eval_overlap_metrics = False
     use_precomputed_embeddings_liu = True
-    test_liu_data = False
+    test_liu_data = True
     use_precomputed_embeddings_ubuntu = True
     test_ubuntu_data = False
-    filtname = None #'de'
-    training_pct = 1
+    filtname = None # which model to leave out for training
+    training_pct = 1 # what percentage of (training) data to train on
     print 'Loading data...'
     
     ubuntu_file = '../ubuntu_human_data.csv'
@@ -713,19 +766,19 @@ if __name__ == '__main__':
     print 'Embedding type is ' + embedding_type
     
     if embedding_type == 'CONTEXT':
-        context_embedding_file = './context_emb_vhredcontext.pkl'
-        modelresponses_embedding_file = './modelresponses_emb_vhredcontext.pkl'
-        gtresponses_embedding_file = './gtresponses_emb_vhredcontext.pkl'
-        context_embedding_file_liu = './context_emb_vhredcontext_liu.pkl'
-        modelresponses_embedding_file_liu = './modelresponses_emb_vhredcontext_liu.pkl'
-        gtresponses_embedding_file_liu = './gtresponses_emb_vhredcontext_liu.pkl'
-        context_embedding_file_ubuntu = './context_emb_vhredcontext_ubuntu.pkl'
-        modelresponses_embedding_file_ubuntu= './modelresponses_emb_vhredcontext_ubuntu.pkl'
-        gtresponses_embedding_file_ubuntu = './gtresponses_emb_vhredcontext_ubuntu.pkl'
+        context_embedding_file = './embeddings/context_emb_vhredcontext.pkl'
+        modelresponses_embedding_file = './embeddings/modelresponses_emb_vhredcontext.pkl'
+        gtresponses_embedding_file = './embeddings/gtresponses_emb_vhredcontext.pkl'
+        context_embedding_file_liu = './embeddings/context_emb_vhredcontext_liu.pkl'
+        modelresponses_embedding_file_liu = './embeddings/modelresponses_emb_vhredcontext_liu.pkl'
+        gtresponses_embedding_file_liu = './embeddings/gtresponses_emb_vhredcontext_liu.pkl'
+        context_embedding_file_ubuntu = './embeddings/context_emb_vhredcontext_ubuntu.pkl'
+        modelresponses_embedding_file_ubuntu= './embeddings/modelresponses_emb_vhredcontext_ubuntu.pkl'
+        gtresponses_embedding_file_ubuntu = './embeddings/gtresponses_emb_vhredcontext_ubuntu.pkl'
     elif embedding_type == 'DECODER':
-        context_embedding_file = './context_emb_vhreddecoder.pkl'
-        modelresponses_embedding_file = './modelresponses_emb_vhreddecoder.pkl'
-        gtresponses_embedding_file = './gtresponses_emb_vhreddecoder.pkl'
+        context_embedding_file = './embeddings/context_emb_vhreddecoder.pkl'
+        modelresponses_embedding_file = './embeddings/modelresponses_emb_vhreddecoder.pkl'
+        gtresponses_embedding_file = './embeddings/gtresponses_emb_vhreddecoder.pkl'
     
     twitter_bpe_dictionary = '../TwitterData/BPE/Twitter_Codes_5000.txt'
     twitter_bpe_separator = '@@'
@@ -759,7 +812,19 @@ if __name__ == '__main__':
     twitter_gtresponses += twitter_gtresponses2
     twitter_modelresponses += twitter_modelresponses2
     twitter_human_scores += twitter_human_scores2
+
     
+    with open('contexts_txt.txt', 'w') as f1:
+        for c in twitter_contexts:
+            f1.write(c + '\n')
+    with open('modelresponses_txt.txt', 'w') as f1:
+        for r in twitter_modelresponses:
+            f1.write(r[8:] + '\n')
+    with open('gtresponses_txt.txt', 'w') as f1:
+        for r in twitter_gtresponses:
+            f1.write(r)
+    
+
     # Load in Twitter dictionaries
     twitter_bpe = BPE(open(twitter_bpe_dictionary, 'r').readlines(), twitter_bpe_separator)
     twitter_dict = cPickle.load(open(twitter_model_dictionary, 'r'))
@@ -881,6 +946,7 @@ if __name__ == '__main__':
     
     twitter_dialogue_embeddings, aux_features = preprocess_data(twitter_contexts, twitter_gtresponses, twitter_modelresponses, context_embedding_file, \
             gtresponses_embedding_file, modelresponses_embedding_file, use_precomputed_embeddings)
+    
 
     if test_liu_data:
         print 'Preprocessing Liu et al. Twitter data...'
@@ -903,14 +969,13 @@ if __name__ == '__main__':
     
     train_index = int((1 - (val_pct + test_pct)) * twitter_dialogue_embeddings.shape[0])
     val_index = int((1 - test_pct) * twitter_dialogue_embeddings.shape[0])
-    print train_index
-    print val_index - train_index
+    
     if filtname != None:
         train_filt = construct_filter(model_map, filtname, 'train')[:train_index]
         val_filt = construct_filter(model_map, filtname, 'val')
         test_filt = val_filt[val_index:]
         val_filt = val_filt[train_index:val_index]
-
+    
     # Main loop through hyperparameter search
     separate_pca = False
     total_summary = ''
@@ -918,8 +983,8 @@ if __name__ == '__main__':
     l1reg_list = [0.005, 0.01, 0.02, 0.03, 0.05]#1e-3, 1e-2, 0.1]
     pca_list = [20, 35, 50, 75, 100, 200]
     l1reg_list = [0.0005, 0.001, 0.002, 0.005]
-    #pca_list = [7]
-    #l1reg_list = [0.02]
+    pca_list = [7]
+    l1reg_list = [0.02]
     l2reg_list = [0]
     lr_list = [0.01]
     last_pca = 0
@@ -976,10 +1041,10 @@ if __name__ == '__main__':
                         train_y = train_y[:int(training_pct * train_index)]
                         train_feat = train_feat[:int(training_pct * train_index)]
                     print 'Training model...'
-                    #summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
-                    #        train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder, \
-                    #        test_contexts=extend_by_four(twitter_contexts)[val_index:], test_modelresponses=twitter_modelresponses[val_index:], \
-                    #        test_gtresponses=extend_by_four(twitter_gtresponses)[val_index:])
+                    summary, folder_name, best_params, model = train(train_x, val_x, test_x, train_y, val_y, test_y, init_mean, init_range, learning_rate=lr, l2reg=l2reg, l1reg=l1reg, \
+                            train_feat=train_feat, val_feat=val_feat, test_feat=test_feat, pca_name=pca_prefix+'pca'+str(pca_components), exp_folder=exp_folder, \
+                            test_contexts=extend_by_four(twitter_contexts)[val_index:], test_modelresponses=twitter_modelresponses[val_index:], \
+                            test_gtresponses=extend_by_four(twitter_gtresponses)[val_index:])
                     total_summary += summary
                     if test_liu_data:
                         liu_summary =  test(liu_x, twitter_human_scores_liu, liu_feat, best_params, model, exp_folder, folder_name, exp_name='liu')
@@ -987,7 +1052,6 @@ if __name__ == '__main__':
                     if test_ubuntu_data:
                         ubuntu_summary =  test(ubuntu_x, ubuntu_human_scores, ubuntu_feat, best_params, model, exp_folder, folder_name, exp_name='ubuntu')
                         total_summary +=  ubuntu_summary
- 
                     last_pca = pca_components
      
     with open('./results/summary_of_experiment_' + exp_name + '.txt', 'w') as f1:
